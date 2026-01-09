@@ -1,0 +1,34 @@
+2026-01-02 19:44:12 - Starting C:\Program Files\nodejs\node.exe  --harmony --max_old_space_size=4096 D:\dynavox\node_modules\node-windows\lib\wrapper.js --file D:\dynavox\server.js --scriptoptions= --log "DYNAVOX Inventory Server wrapper" --grow 0.25 --wait 1 --maxrestarts 3 --abortonerror n --stopparentfirst undefined
+2026-01-02 19:44:12 - Started 26636
+2026-01-02 19:45:02 - Stopping dynavoxinventoryserver.exe
+2026-01-02 19:45:02 - ProcessKill 26636
+2026-01-02 19:45:03 - Found child process: 20888 Name: conhost.exe
+2026-01-02 19:45:03 - Found child process: 30964 Name: node.exe
+2026-01-02 19:45:03 - Stopping process 20888
+2026-01-02 19:45:03 - Send SIGINT 20888
+2026-01-02 19:45:03 - SIGINT to 20888 failed - Killing as fallback
+2026-01-02 19:45:03 - Stopping process 30964
+2026-01-02 19:45:03 - Send SIGINT 30964
+2026-01-02 19:45:03 - SIGINT to 30964 failed - Killing as fallback
+2026-01-02 19:45:03 - Stopping process 26636
+2026-01-02 19:45:03 - Send SIGINT 26636
+2026-01-02 19:45:03 - SIGINT to 26636 failed - Killing as fallback
+2026-01-02 19:45:03 - Finished dynavoxinventoryserver.exe
+2026-01-02 19:45:21 - Starting C:\Program Files\nodejs\node.exe  --harmony --max_old_space_size=4096 D:\dynavox\node_modules\node-windows\lib\wrapper.js --file D:\dynavox\server.js --scriptoptions= --log "DYNAVOX Inventory Server wrapper" --grow 0.25 --wait 1 --maxrestarts 3 --abortonerror n --stopparentfirst undefined
+2026-01-02 19:45:21 - Started 8680
+2026-01-02 19:45:41 - Stopping dynavoxinventoryserver.exe
+2026-01-02 19:45:41 - ProcessKill 8680
+2026-01-02 19:45:41 - Found child process: 5620 Name: conhost.exe
+2026-01-02 19:45:41 - Found child process: 27440 Name: node.exe
+2026-01-02 19:45:41 - Stopping process 5620
+2026-01-02 19:45:41 - Send SIGINT 5620
+2026-01-02 19:45:41 - SIGINT to 5620 failed - Killing as fallback
+2026-01-02 19:45:41 - Stopping process 27440
+2026-01-02 19:45:41 - Send SIGINT 27440
+2026-01-02 19:45:41 - SIGINT to 27440 failed - Killing as fallback
+2026-01-02 19:45:41 - Stopping process 8680
+2026-01-02 19:45:41 - Send SIGINT 8680
+2026-01-02 19:45:41 - SIGINT to 8680 failed - Killing as fallback
+2026-01-02 19:45:41 - Finished dynavoxinventoryserver.exe
+2026-01-02 19:45:53 - Starting C:\Program Files\nodejs\node.exe  --harmony --max_old_space_size=4096 D:\dynavox\node_modules\node-windows\lib\wrapper.js --file D:\dynavox\server.js --scriptoptions= --log "DYNAVOX Inventory Server wrapper" --grow 0.25 --wait 1 --maxrestarts 3 --abortonerror n --stopparentfirst undefined
+2026-01-02 19:45:53 - Started 12100
