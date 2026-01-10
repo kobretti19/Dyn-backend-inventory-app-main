@@ -1,6 +1,6 @@
 const db = require('../db');
 
-// GET all parts colors - prices come from parts table
+// GET all parts colors - prices now in parts_colors table
 exports.getAllPartsColors = async (req, res) => {
   try {
     const [rows] = await db.query(`
@@ -11,9 +11,9 @@ exports.getAllPartsColors = async (req, res) => {
         pc.quantity,
         pc.min_stock_level,
         pc.order_number,
+        pc.purchase_price,
+        pc.selling_price,
         p.name AS part_name,
-        p.purchase_price,
-        p.selling_price,
         c.name AS color_name,
         pcat.name AS category_name,
         CASE 
@@ -49,9 +49,9 @@ exports.getColorsByPart = async (req, res) => {
         pc.quantity,
         pc.min_stock_level,
         pc.order_number,
+        pc.purchase_price,
+        pc.selling_price,
         c.name AS color_name,
-        p.purchase_price,
-        p.selling_price,
         CASE 
           WHEN pc.quantity = 0 THEN 'out_of_stock'
           WHEN pc.quantity <= pc.min_stock_level THEN 'low_stock'
@@ -59,7 +59,6 @@ exports.getColorsByPart = async (req, res) => {
         END AS stock_status
       FROM parts_colors pc
       JOIN colors c ON pc.color_id = c.id
-      JOIN parts p ON pc.part_id = p.id
       WHERE pc.part_id = ?
       ORDER BY c.name
     `;
@@ -85,10 +84,10 @@ exports.getPartsByColor = async (req, res) => {
         pc.quantity,
         pc.min_stock_level,
         pc.order_number,
+        pc.purchase_price,
+        pc.selling_price,
         p.name AS part_name,
         p.description,
-        p.purchase_price,
-        p.selling_price,
         c.name AS color_name,
         CASE 
           WHEN pc.quantity = 0 THEN 'out_of_stock'
@@ -123,9 +122,9 @@ exports.getLowStockItems = async (req, res) => {
         pc.quantity,
         pc.min_stock_level,
         pc.order_number,
+        pc.purchase_price,
+        pc.selling_price,
         p.name AS part_name,
-        p.purchase_price,
-        p.selling_price,
         c.name AS color_name,
         pcat.name AS category_name,
         CASE 
@@ -150,7 +149,7 @@ exports.getLowStockItems = async (req, res) => {
   }
 };
 
-// POST - Add color to part
+// POST - Add color to part with prices
 exports.addColorToPart = async (req, res) => {
   try {
     const {
@@ -159,6 +158,8 @@ exports.addColorToPart = async (req, res) => {
       quantity = 0,
       min_stock_level = 5,
       order_number,
+      purchase_price = 0,
+      selling_price = 0,
     } = req.body;
 
     console.log('Received data:', req.body);
@@ -191,25 +192,27 @@ exports.addColorToPart = async (req, res) => {
         : 'in_stock';
 
     const [result] = await db.query(
-      'INSERT INTO parts_colors (part_id, color_id, quantity, min_stock_level, order_number, status) VALUES (?, ?, ?, ?, ?, ?)',
+      `INSERT INTO parts_colors 
+       (part_id, color_id, quantity, min_stock_level, order_number, purchase_price, selling_price, status) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         part_id,
         color_id,
         quantity,
         min_stock_level,
         order_number || null,
+        purchase_price,
+        selling_price,
         status,
       ]
     );
 
-    // Fetch the created record with part prices
+    // Fetch the created record
     const [created] = await db.query(
       `
       SELECT 
         pc.*,
         p.name AS part_name,
-        p.purchase_price,
-        p.selling_price,
         c.name AS color_name
       FROM parts_colors pc
       JOIN parts p ON pc.part_id = p.id
@@ -229,11 +232,18 @@ exports.addColorToPart = async (req, res) => {
   }
 };
 
-// PUT - Update part color
+// PUT - Update part color including prices
 exports.updatePartColor = async (req, res) => {
   try {
-    const { part_id, color_id, quantity, min_stock_level, order_number } =
-      req.body;
+    const {
+      part_id,
+      color_id,
+      quantity,
+      min_stock_level,
+      order_number,
+      purchase_price,
+      selling_price,
+    } = req.body;
 
     console.log('=== UPDATE PART COLOR DEBUG ===');
     console.log('ID:', req.params.id);
@@ -265,6 +275,14 @@ exports.updatePartColor = async (req, res) => {
       color_id !== undefined ? parseInt(color_id) : existing[0].color_id;
     const finalOrderNumber =
       order_number !== undefined ? order_number : existing[0].order_number;
+    const finalPurchasePrice =
+      purchase_price !== undefined
+        ? parseFloat(purchase_price)
+        : existing[0].purchase_price;
+    const finalSellingPrice =
+      selling_price !== undefined
+        ? parseFloat(selling_price)
+        : existing[0].selling_price;
 
     const status =
       finalQuantity === 0
@@ -279,7 +297,9 @@ exports.updatePartColor = async (req, res) => {
            color_id = ?, 
            quantity = ?, 
            min_stock_level = ?, 
-           order_number = ?, 
+           order_number = ?,
+           purchase_price = ?,
+           selling_price = ?,
            status = ? 
        WHERE id = ?`,
       [
@@ -288,19 +308,19 @@ exports.updatePartColor = async (req, res) => {
         finalQuantity,
         finalMinStock,
         finalOrderNumber,
+        finalPurchasePrice,
+        finalSellingPrice,
         status,
         req.params.id,
       ]
     );
 
-    // Fetch updated record with part prices
+    // Fetch updated record
     const [updated] = await db.query(
       `
       SELECT 
         pc.*,
         p.name AS part_name,
-        p.purchase_price,
-        p.selling_price,
         c.name AS color_name,
         CASE 
           WHEN pc.quantity = 0 THEN 'out_of_stock'

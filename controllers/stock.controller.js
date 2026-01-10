@@ -8,7 +8,8 @@ exports.getAllStockMovements = async (req, res) => {
         sm.*,
         p.name AS part_name,
         c.name AS color_name,
-        u.username AS user_username
+        u.username AS user_username,
+        pc.order_number AS order_number
       FROM stock_movements sm
       JOIN parts_colors pc ON sm.part_color_id = pc.id
       JOIN parts p ON pc.part_id = p.id
