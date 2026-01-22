@@ -75,7 +75,7 @@ exports.getStockLevels = async (req, res) => {
 exports.getLowStockAlerts = async (req, res) => {
   try {
     const [rows] = await db.query(
-      'SELECT * FROM v_stock_levels WHERE stock_status IN ("low", "critical") ORDER BY available_quantity ASC'
+      'SELECT * FROM v_stock_levels WHERE stock_status IN ("low", "critical") ORDER BY available_quantity ASC',
     );
 
     res.status(200).json({
@@ -107,7 +107,7 @@ exports.addStock = async (req, res) => {
     // Update stock
     await connection.query(
       'UPDATE parts_colors SET quantity = quantity + ?, last_restocked_at = NOW() WHERE id = ?',
-      [quantity, part_color_id]
+      [quantity, part_color_id],
     );
 
     // Record stock movement
@@ -120,7 +120,7 @@ exports.addStock = async (req, res) => {
         'manual',
         req.user.id,
         notes || 'Manual restock',
-      ]
+      ],
     );
 
     await connection.commit();
@@ -145,8 +145,10 @@ exports.adjustStock = async (req, res) => {
     await connection.beginTransaction();
 
     const { part_color_id, quantity, notes } = req.body;
+    const userId = req.user?.id || null; // Handle undefined user
 
     if (!part_color_id || quantity === undefined) {
+      await connection.rollback(); // Add rollback
       return res.status(400).json({
         success: false,
         error: 'Part color ID and quantity are required',
@@ -156,7 +158,7 @@ exports.adjustStock = async (req, res) => {
     // Get current stock
     const [current] = await connection.query(
       'SELECT quantity FROM parts_colors WHERE id = ?',
-      [part_color_id]
+      [part_color_id],
     );
 
     if (current.length === 0) {
@@ -172,7 +174,19 @@ exports.adjustStock = async (req, res) => {
     // Update stock
     await connection.query(
       'UPDATE parts_colors SET quantity = ? WHERE id = ?',
-      [quantity, part_color_id]
+      [quantity, part_color_id],
+    );
+
+    // Update stock status
+    await connection.query(
+      `UPDATE parts_colors
+       SET status = CASE
+         WHEN quantity = 0 THEN 'out_of_stock'
+         WHEN quantity <= min_stock_level THEN 'low_stock'
+         ELSE 'in_stock'
+       END
+       WHERE id = ?`,
+      [part_color_id],
     );
 
     // Record stock movement
@@ -182,10 +196,10 @@ exports.adjustStock = async (req, res) => {
         part_color_id,
         difference > 0 ? 'in' : 'out',
         Math.abs(difference),
-        'adjustment',
-        req.user.id,
+        'manual', // FIXED: Changed from 'adjustment' to 'manual'
+        userId, // FIXED: Use userId variable
         notes || 'Stock adjustment',
-      ]
+      ],
     );
 
     await connection.commit();
@@ -196,6 +210,7 @@ exports.adjustStock = async (req, res) => {
     });
   } catch (error) {
     await connection.rollback();
+    console.error('Adjust stock error:', error); // Better error logging
     res.status(500).json({ success: false, error: error.message });
   } finally {
     connection.release();

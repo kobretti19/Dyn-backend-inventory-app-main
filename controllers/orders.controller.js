@@ -100,7 +100,7 @@ exports.getOrderById = async (req, res) => {
       FROM orders o
       LEFT JOIN users u ON o.user_id = u.id
       WHERE o.id = ?`,
-      [req.params.id]
+      [req.params.id],
     );
 
     if (orderRows.length === 0) {
@@ -133,7 +133,7 @@ exports.getOrderById = async (req, res) => {
       LEFT JOIN parts p ON pc.part_id = p.id
       LEFT JOIN colors c ON pc.color_id = c.id
       WHERE oi.order_id = ?`,
-      [req.params.id]
+      [req.params.id],
     );
 
     const order = {
@@ -148,22 +148,22 @@ exports.getOrderById = async (req, res) => {
       total_items: itemsRows.length,
       total_quantity: itemsRows.reduce(
         (sum, item) => sum + (item.quantity_ordered || item.quantity),
-        0
+        0,
       ),
       total_delivered: itemsRows.reduce(
         (sum, item) => sum + (item.quantity_delivered || 0),
-        0
+        0,
       ),
       total_backorder: itemsRows.reduce(
         (sum, item) => sum + (item.quantity_backorder || 0),
-        0
+        0,
       ),
       total_amount: itemsRows.reduce(
         (sum, item) =>
           sum +
           (item.quantity_ordered || item.quantity) *
             parseFloat(item.purchase_price_at_order || 0),
-        0
+        0,
       ),
     };
 
@@ -199,7 +199,7 @@ exports.createOrder = async (req, res) => {
     // Create order
     const [orderResult] = await connection.query(
       'INSERT INTO orders (order_number, user_id, status, notes) VALUES (?, ?, ?, ?)',
-      [orderNumber, req.user?.id, 'waiting_for_answer', notes]
+      [orderNumber, req.user?.id, 'waiting_for_answer', notes],
     );
 
     const orderId = orderResult.insertId;
@@ -212,7 +212,7 @@ exports.createOrder = async (req, res) => {
       if (purchasePrice === undefined || purchasePrice === null) {
         const [pcRows] = await connection.query(
           'SELECT purchase_price FROM parts_colors WHERE id = ?',
-          [item.part_color_id]
+          [item.part_color_id],
         );
         purchasePrice = pcRows.length > 0 ? pcRows[0].purchase_price : 0;
       }
@@ -228,7 +228,7 @@ exports.createOrder = async (req, res) => {
           item.quantity,
           purchasePrice,
           item.notes || null,
-        ]
+        ],
       );
     }
 
@@ -250,7 +250,7 @@ exports.createOrder = async (req, res) => {
       LEFT JOIN order_items oi ON o.id = oi.order_id
       WHERE o.id = ?
       GROUP BY o.id, o.order_number, o.status, o.notes, o.created_at, o.updated_at`,
-      [orderId]
+      [orderId],
     );
 
     res.status(201).json({
@@ -280,7 +280,7 @@ exports.updateOrderStatus = async (req, res) => {
     // Get current order
     const [currentOrder] = await connection.query(
       'SELECT status FROM orders WHERE id = ?',
-      [orderId]
+      [orderId],
     );
 
     if (currentOrder.length === 0) {
@@ -310,7 +310,7 @@ exports.updateOrderStatus = async (req, res) => {
         `UPDATE orders 
          SET status = ?, notes = CONCAT(COALESCE(notes, ''), '\n\n', ?) 
          WHERE id = ?`,
-        [status, `[${timestamp}] Status: ${status} - ${notes}`, orderId]
+        [status, `[${timestamp}] Status: ${status} - ${notes}`, orderId],
       );
     } else {
       await connection.query('UPDATE orders SET status = ? WHERE id = ?', [
@@ -323,7 +323,7 @@ exports.updateOrderStatus = async (req, res) => {
     await connection.query(
       `INSERT INTO order_status_history (order_id, old_status, new_status, changed_by, notes)
        VALUES (?, ?, ?, ?, ?)`,
-      [orderId, oldStatus, status, userId, notes || null]
+      [orderId, oldStatus, status, userId, notes || null],
     );
 
     // Handle delivery with partial quantities
@@ -334,7 +334,7 @@ exports.updateOrderStatus = async (req, res) => {
         const [orderItems] = await connection.query(
           `SELECT oi.id, oi.part_color_id, oi.quantity, oi.quantity_ordered
            FROM order_items oi WHERE oi.order_id = ?`,
-          [orderId]
+          [orderId],
         );
 
         if (orderItems.length === 0) {
@@ -381,7 +381,7 @@ exports.updateOrderStatus = async (req, res) => {
         const [currentItem] = await connection.query(
           `SELECT quantity_ordered, quantity_delivered, quantity_backorder 
            FROM order_items WHERE id = ?`,
-          [id]
+          [id],
         );
 
         if (currentItem.length === 0) {
@@ -390,19 +390,40 @@ exports.updateOrderStatus = async (req, res) => {
 
         const existingDelivered = currentItem[0].quantity_delivered || 0;
         const newTotalDelivered = existingDelivered + receivingQty;
+        const orderedQty = currentItem[0].quantity_ordered;
+
+        // Calculate correct backorder - never negative!
+        let calculatedBackorder = Math.max(0, orderedQty - newTotalDelivered);
+
+        // If user manually set backorder, use it, otherwise use calculated
+        const finalBackorder =
+          backorderQty > 0 ? backorderQty : calculatedBackorder;
 
         // Determine item status
         let finalItemStatus = item_status || 'delivered';
-        if (backorderQty > 0) {
+
+        if (finalBackorder > 0) {
           hasBackorder = true;
           finalItemStatus = newTotalDelivered > 0 ? 'partial' : 'backorder';
         } else if (receivingQty === 0 && existingDelivered === 0) {
           finalItemStatus = 'cancelled';
-        } else if (
-          backorderQty === 0 &&
-          newTotalDelivered >= currentItem[0].quantity_ordered
-        ) {
+        } else if (newTotalDelivered >= orderedQty) {
+          // If delivered quantity meets or EXCEEDS ordered quantity, mark as delivered
           finalItemStatus = 'delivered';
+
+          // If we received MORE than ordered, log it
+          if (newTotalDelivered > orderedQty) {
+            const extraQty = newTotalDelivered - orderedQty;
+            await connection.query(
+              `UPDATE order_items 
+               SET notes = CONCAT(COALESCE(notes, ''), '\n', ?)
+               WHERE id = ?`,
+              [
+                `[${new Date().toISOString().split('T')[0]}] Over-delivery: received ${extraQty} extra units`,
+                id,
+              ],
+            );
+          }
         }
 
         // Update order item - ADD to existing delivered
@@ -412,7 +433,7 @@ exports.updateOrderStatus = async (req, res) => {
                quantity_backorder = ?,
                item_status = ?
            WHERE id = ? AND order_id = ?`,
-          [receivingQty, backorderQty, finalItemStatus, id, orderId]
+          [receivingQty, finalBackorder, finalItemStatus, id, orderId],
         );
 
         // Add received quantity to stock (only the new amount)
@@ -420,7 +441,7 @@ exports.updateOrderStatus = async (req, res) => {
           // Increase stock
           await connection.query(
             'UPDATE parts_colors SET quantity = quantity + ? WHERE id = ?',
-            [receivingQty, part_color_id]
+            [receivingQty, part_color_id],
           );
 
           // Update stock status
@@ -432,7 +453,7 @@ exports.updateOrderStatus = async (req, res) => {
                ELSE 'in_stock'
              END
              WHERE id = ?`,
-            [part_color_id]
+            [part_color_id],
           );
 
           // Record stock movement
@@ -445,10 +466,10 @@ exports.updateOrderStatus = async (req, res) => {
               receivingQty,
               orderId,
               userId,
-              backorderQty > 0
-                ? `Partial delivery: ${receivingQty} received, ${backorderQty} on backorder`
+              finalBackorder > 0
+                ? `Partial delivery: ${receivingQty} received, ${finalBackorder} on backorder`
                 : `Order delivered: ${receivingQty} received`,
-            ]
+            ],
           );
         }
       }
@@ -490,7 +511,7 @@ exports.updateOrder = async (req, res) => {
 
     const [result] = await db.query(
       'UPDATE orders SET notes = ? WHERE id = ?',
-      [notes, req.params.id]
+      [notes, req.params.id],
     );
 
     if (result.affectedRows === 0) {
@@ -519,7 +540,7 @@ exports.deleteOrder = async (req, res) => {
 
     const [orders] = await connection.query(
       'SELECT status FROM orders WHERE id = ?',
-      [req.params.id]
+      [req.params.id],
     );
 
     if (orders.length === 0) {
@@ -547,19 +568,19 @@ exports.deleteOrder = async (req, res) => {
        SET status = 'cancelled', 
            notes = CONCAT(COALESCE(notes, ''), '\n\n', ?) 
        WHERE id = ?`,
-      [`[${timestamp}] Order cancelled`, req.params.id]
+      [`[${timestamp}] Order cancelled`, req.params.id],
     );
 
     // Record status change in history
     await connection.query(
       `INSERT INTO order_status_history (order_id, old_status, new_status, changed_by, notes)
        VALUES (?, ?, 'cancelled', ?, 'Order cancelled')`,
-      [req.params.id, order.status, req.user?.id || null]
+      [req.params.id, order.status, req.user?.id || null],
     );
 
     await connection.query(
       `UPDATE order_items SET item_status = 'cancelled' WHERE order_id = ?`,
-      [req.params.id]
+      [req.params.id],
     );
 
     await connection.commit();
@@ -671,7 +692,7 @@ exports.getOrderHistory = async (req, res) => {
       WHERE osh.order_id = ?
       ORDER BY osh.created_at DESC
     `,
-      [req.params.id]
+      [req.params.id],
     );
 
     res.status(200).json({
