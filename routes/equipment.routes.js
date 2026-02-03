@@ -3,26 +3,24 @@ const router = express.Router();
 const equipmentController = require('../controllers/equipment.controller');
 const { verifyToken } = require('../middleware/auth');
 
-// All routes require authentication
-router.use(verifyToken);
+// router.use(verifyToken);
 
 // GET routes
-router.get('/', equipmentController.getAllEquipment);
-router.get('/detailed', equipmentController.getEquipmentDetailed);
-router.get('/inventory', equipmentController.getPartsInventory);
-router.get('/low-stock', equipmentController.getLowStockAlerts);
-router.get('/category/:categoryId', equipmentController.getEquipmentByCategory);
-router.get('/brand/:brandId', equipmentController.getEquipmentByBrand);
-router.get('/status/:status', equipmentController.getEquipmentByStatus);
-router.get('/:id', equipmentController.getEquipmentById);
+router.get('/', equipmentController.getAll);
+router.get('/brands', equipmentController.getBrands);
+router.get('/categories', equipmentController.getCategories);
+router.get('/:id', equipmentController.getById);
 
 // POST routes
-router.post('/', equipmentController.createEquipment);
+router.post('/', equipmentController.create);
+router.post('/:id/parts', equipmentController.addPart);
+router.post('/:id/produce', equipmentController.produce);
 
 // PUT routes
-router.put('/:id', equipmentController.updateEquipment);
+router.put('/:id', equipmentController.update);
 
 // DELETE routes
-router.delete('/:id', equipmentController.deleteEquipment);
+router.delete('/:id', equipmentController.delete);
+router.delete('/:id/parts/:partId', equipmentController.removePart);
 
 module.exports = router;

@@ -10,7 +10,11 @@ router.use(verifyToken);
 router.get('/movements', stockController.getAllStockMovements);
 router.get(
   '/movements/:partColorId',
-  stockController.getStockMovementsByPartColor
+  stockController.getStockMovementsByPartColor,
+);
+router.get(
+  '/movements/:partColorId',
+  stockController.getStockMovementsByPartColor,
 );
 router.get('/levels', stockController.getStockLevels);
 router.get('/alerts', stockController.getLowStockAlerts);

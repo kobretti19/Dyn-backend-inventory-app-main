@@ -1,33 +1,25 @@
-const db = require('../db'); // GET - Get all equipment (with soft delete filter)
-// GET - Get all equipment with creator info
-exports.getAllEquipment = async (req, res) => {
-  try {
-    const query = `
-      SELECT 
-        e.id,
-        e.model,
-        e.serial_number,
-        e.brand_id,
-        e.category_id,
-        e.user_id,
-        e.year_manufactured,
-        e.production_date,
-        e.status,
-        e.created_at,
-        e.updated_at,
-        b.name AS brand_name,
-        c.name AS category_name,
-        u.username AS created_by_username,
-        u.full_name AS created_by_name
-      FROM equipment e
-      LEFT JOIN brands b ON e.brand_id = b.id
-      LEFT JOIN categories c ON e.category_id = c.id
-      LEFT JOIN users u ON e.user_id = u.id
-      WHERE e.deleted_at IS NULL
-      ORDER BY e.created_at DESC
-    `;
+const db = require('../db');
 
-    const [rows] = await db.query(query);
+// GET all equipment
+exports.getAll = async (req, res) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT 
+        id,
+        model,
+        brand,
+        category,
+        serial_number,
+        year_manufactured,
+        production_date,
+        article_id,
+        status,
+        created_at,
+        updated_at
+      FROM equipment 
+      WHERE deleted_at IS NULL
+      ORDER BY model
+    `);
 
     res.status(200).json({
       success: true,
@@ -35,549 +27,589 @@ exports.getAllEquipment = async (req, res) => {
       data: rows,
     });
   } catch (error) {
-    console.error('Get all equipment error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 };
 
-// GET - Get equipment with details using view
-exports.getEquipmentDetailed = async (req, res) => {
+// GET single equipment by ID (with parts)
+exports.getById = async (req, res) => {
   try {
-    const [rows] = await db.query(
-      'SELECT * FROM v_equipment_details ORDER BY model'
+    const [equipment] = await db.query(
+      'SELECT * FROM equipment WHERE id = ? AND deleted_at IS NULL',
+      [req.params.id],
     );
-    res.status(200).json({
-      success: true,
-      count: rows.length,
-      data: rows,
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-}; // GET - Get equipment by ID with full details
-exports.getEquipmentById = async (req, res) => {
-  try {
-    const query = `
-SELECT
-  e.*,
-  c.name AS category_name,
-  b.name AS brand_name,
-  JSON_ARRAYAGG(
-    JSON_OBJECT(
-      'part_id', p.id,
-      'part_name', p.name,
-      'color_id', col.id,
-      'color_name', col.name,
-      'quantity_needed', ep.quantity_needed,
-      'notes', ep.notes
-    )
-  ) as parts_used
-FROM equipment e
-LEFT JOIN categories c ON e.category_id = c.id
-LEFT JOIN brands b ON e.brand_id = b.id
-LEFT JOIN equipment_parts ep ON e.id = ep.equipment_id
-LEFT JOIN parts_colors pc ON ep.part_color_id = pc.id
-LEFT JOIN parts p ON pc.part_id = p.id
-LEFT JOIN colors col ON pc.color_id = col.id
-WHERE e.id = ? AND e.deleted_at IS NULL
-GROUP BY e.id
-`;
-    const [rows] = await db.query(query, [req.params.id]);
-    if (rows.length === 0) {
-      return res
-        .status(404)
-        .json({ success: false, error: 'Equipment not found' });
+
+    if (equipment.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Equipment not found',
+      });
     }
-    res.status(200).json({ success: true, data: rows[0] });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-}; // GET - Get equipment by category
-exports.getEquipmentByCategory = async (req, res) => {
-  try {
-    const [rows] = await db.query(
-      'SELECT * FROM equipment WHERE category_id = ? AND deleted_at IS NULL ORDER BY model',
-      [req.params.categoryId]
-    );
-    res.status(200).json({
-      success: true,
-      count: rows.length,
-      data: rows,
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-}; // GET - Get equipment by brand
-exports.getEquipmentByBrand = async (req, res) => {
-  try {
-    const [rows] = await db.query(
-      'SELECT * FROM equipment WHERE brand_id = ? AND deleted_at IS NULL ORDER BY model',
-      [req.params.brandId]
-    );
-    res.status(200).json({
-      success: true,
-      count: rows.length,
-      data: rows,
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-}; // GET - Get equipment by status
-exports.getEquipmentByStatus = async (req, res) => {
-  try {
-    const [rows] = await db.query(
-      'SELECT * FROM equipment WHERE status = ? AND deleted_at IS NULL ORDER BY model',
-      [req.params.status]
-    );
-    res.status(200).json({
-      success: true,
-      count: rows.length,
-      data: rows,
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-};
 
-// GET - Get equipment with parts
-exports.getEquipmentWithParts = async (req, res) => {
-  try {
-    const query = `
+    // Get associated parts
+    const [parts] = await db.query(
+      `
       SELECT 
-        e.id,
-        e.model,
-        e.serial_number,
-        e.brand_id,
-        e.category_id,
-        e.user_id,
-        e.created_at,
-        b.name AS brand_name,
-        c.name AS category_name,
-        u.username AS created_by_username,
-        u.full_name AS created_by_name,
-        JSON_ARRAYAGG(
-          JSON_OBJECT(
-            'part_color_id', ep.part_color_id,
-            'quantity', ep.quantity,
-            'part_name', p.name,
-            'color_name', col.name
-          )
-        ) AS parts
-      FROM equipment e
-      LEFT JOIN brands b ON e.brand_id = b.id
-      LEFT JOIN categories c ON e.category_id = c.id
-      LEFT JOIN users u ON e.user_id = u.id
-      LEFT JOIN equipment_parts ep ON e.id = ep.equipment_id
-      LEFT JOIN parts_colors pc ON ep.part_color_id = pc.id
-      LEFT JOIN parts p ON pc.part_id = p.id
-      LEFT JOIN colors col ON pc.color_id = col.id
-      WHERE e.deleted_at IS NULL
-      GROUP BY e.id, e.model, e.serial_number, e.brand_id, e.category_id, e.user_id, e.created_at, b.name, c.name, u.username, u.full_name
-      ORDER BY e.created_at DESC
-    `;
-
-    const [rows] = await db.query(query);
-
-    // Parse JSON_ARRAYAGG results
-    const equipment = rows.map((row) => ({
-      ...row,
-      parts: row.parts
-        ? JSON.parse(row.parts).filter((p) => p.part_color_id !== null)
-        : [],
-    }));
+        ep.id AS equipment_part_id,
+        ep.quantity_needed,
+        ep.notes AS part_notes,
+        p.id AS part_id,
+        p.name,
+        p.color,
+        p.category,
+        p.sku,
+        p.purchase_price,
+        p.selling_price,
+        p.quantity,
+        p.status
+      FROM equipment_parts ep
+      JOIN parts p ON ep.part_id = p.id
+      WHERE ep.equipment_id = ? AND p.deleted_at IS NULL
+      ORDER BY p.name, p.color
+    `,
+      [req.params.id],
+    );
 
     res.status(200).json({
       success: true,
-      count: equipment.length,
-      data: equipment,
+      data: {
+        ...equipment[0],
+        parts,
+      },
     });
   } catch (error) {
-    console.error('Get equipment with parts error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 };
 
-// POST - Create equipment with parts and reduce inventory
-exports.createEquipment = async (req, res) => {
+// GET distinct brands (for dropdowns)
+exports.getBrands = async (req, res) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT DISTINCT brand 
+      FROM equipment 
+      WHERE brand IS NOT NULL AND deleted_at IS NULL
+      UNION
+      SELECT DISTINCT brand 
+      FROM equipment_templates 
+      WHERE brand IS NOT NULL
+      ORDER BY brand
+    `);
+
+    res.status(200).json({
+      success: true,
+      data: rows.map((r) => r.brand),
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// GET distinct categories (for dropdowns)
+exports.getCategories = async (req, res) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT DISTINCT category 
+      FROM equipment 
+      WHERE category IS NOT NULL AND deleted_at IS NULL
+      UNION
+      SELECT DISTINCT category 
+      FROM equipment_templates 
+      WHERE category IS NOT NULL
+      ORDER BY category
+    `);
+
+    res.status(200).json({
+      success: true,
+      data: rows.map((r) => r.category),
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// POST create new equipment (with optional template)
+exports.create = async (req, res) => {
   const connection = await db.getConnection();
 
   try {
     await connection.beginTransaction();
 
     const {
+      template_id, // Select existing template
       model,
-      category_id,
-      brand_id,
+      brand,
+      category,
       serial_number,
       year_manufactured,
       production_date,
+      article_id,
       status = 'active',
-      parts, // [{ part_id, color_id, quantity, notes }]
+      parts = [],
+      reduce_stock = true,
+      save_as_template = false, // NEW: save configuration as template
+      template_name, // NEW: name for new template (optional)
     } = req.body;
 
-    const user_id = req.user?.id || null;
+    const userId = req.user?.id;
 
-    // =========================
-    // VALIDATION
-    // =========================
-    if (!model) {
-      return res.status(400).json({
-        success: false,
-        error: 'Model is required',
-      });
-    }
+    let finalModel = model;
+    let finalBrand = brand;
+    let finalCategory = category;
+    let finalArticleId = article_id;
+    let finalParts = parts;
+    let templateName = null;
+    let usedTemplateId = template_id || null;
+    let newTemplateId = null;
 
-    if (!parts || !Array.isArray(parts) || parts.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'Parts are required',
-      });
-    }
-
-    // Check duplicate serial number
-    if (serial_number) {
-      const [existing] = await connection.query(
-        'SELECT id FROM equipment WHERE serial_number = ? AND deleted_at IS NULL',
-        [serial_number]
+    // If template_id provided, get template data
+    if (template_id) {
+      const [templates] = await connection.query(
+        'SELECT * FROM equipment_templates WHERE id = ?',
+        [template_id],
       );
 
-      if (existing.length > 0) {
+      if (templates.length === 0) {
+        await connection.rollback();
+        return res.status(404).json({
+          success: false,
+          error: 'Template not found',
+        });
+      }
+
+      const template = templates[0];
+      templateName = template.name;
+
+      // Use template values (can be overridden by request)
+      finalModel = model || template.name;
+      finalBrand = brand || template.brand;
+      finalCategory = category || template.category;
+      finalArticleId = article_id || template.article_id;
+
+      // Use template parts if no parts provided
+      if (parts.length === 0) {
+        const templateParts = JSON.parse(template.parts_data || '[]');
+        finalParts = templateParts.map((p) => ({
+          part_id: p.part_id,
+          quantity_needed: p.quantity || 1,
+        }));
+      }
+    }
+
+    if (!finalModel) {
+      await connection.rollback();
+      return res.status(400).json({
+        success: false,
+        error: 'Model name is required (or select a template)',
+      });
+    }
+
+    // If save_as_template is true, create a new template first
+    if (save_as_template && !template_id) {
+      const partsData = JSON.stringify(
+        finalParts.map((p) => ({
+          part_id: p.part_id,
+          quantity: p.quantity_needed || p.quantity || 1,
+        })),
+      );
+
+      const [templateResult] = await connection.query(
+        `INSERT INTO equipment_templates 
+         (name, description, brand, category, article_id, parts_data, user_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          template_name || finalModel,
+          `Template created from equipment: ${finalModel}`,
+          finalBrand || null,
+          finalCategory || null,
+          finalArticleId || null,
+          partsData,
+          userId,
+        ],
+      );
+
+      newTemplateId = templateResult.insertId;
+      usedTemplateId = newTemplateId;
+      templateName = template_name || finalModel;
+    }
+
+    // If reducing stock, check availability first
+    if (reduce_stock && finalParts.length > 0) {
+      const insufficientParts = [];
+
+      for (const part of finalParts) {
+        const [partData] = await connection.query(
+          'SELECT id, name, color, quantity FROM parts WHERE id = ? AND deleted_at IS NULL',
+          [part.part_id],
+        );
+
+        if (partData.length === 0) {
+          await connection.rollback();
+          return res.status(404).json({
+            success: false,
+            error: `Part with ID ${part.part_id} not found`,
+          });
+        }
+
+        const needed = part.quantity_needed || part.quantity || 1;
+        if (partData[0].quantity < needed) {
+          insufficientParts.push({
+            part_id: part.part_id,
+            name: partData[0].name,
+            color: partData[0].color,
+            needed: needed,
+            available: partData[0].quantity,
+          });
+        }
+      }
+
+      if (insufficientParts.length > 0) {
         await connection.rollback();
         return res.status(400).json({
           success: false,
-          error: 'Serial number already exists',
+          error: 'Insufficient stock for some parts',
+          insufficientParts,
         });
       }
     }
 
-    // =========================
-    // INSERT EQUIPMENT
-    // =========================
-    const [equipmentResult] = await connection.query(
+    // Create equipment with template reference
+    const [result] = await connection.query(
       `INSERT INTO equipment 
-       (user_id, model, category_id, brand_id, serial_number, year_manufactured, production_date, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       (template_id, created_from_template, model, brand, category, serial_number, year_manufactured, production_date, article_id, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        user_id,
-        model,
-        category_id,
-        brand_id,
-        serial_number,
-        year_manufactured,
-        production_date,
+        usedTemplateId,
+        templateName || null,
+        finalModel,
+        finalBrand || null,
+        finalCategory || null,
+        serial_number || null,
+        year_manufactured || null,
+        production_date || null,
+        finalArticleId || null,
         status,
-      ]
+      ],
     );
 
-    const equipment_id = equipmentResult.insertId;
+    const equipmentId = result.insertId;
 
-    // =========================
-    // PROCESS PARTS
-    // =========================
-    for (const part of parts) {
-      const { part_id, color_id, quantity, notes } = part;
+    // Add parts and reduce stock
+    if (finalParts.length > 0) {
+      for (const part of finalParts) {
+        const quantityNeeded = part.quantity_needed || part.quantity || 1;
 
-      if (!part_id || !color_id || !quantity || quantity <= 0) {
-        await connection.rollback();
-        return res.status(400).json({
-          success: false,
-          error: 'Invalid part data provided',
-        });
+        // Add to equipment_parts
+        await connection.query(
+          'INSERT INTO equipment_parts (equipment_id, part_id, quantity_needed, notes) VALUES (?, ?, ?, ?)',
+          [equipmentId, part.part_id, quantityNeeded, part.notes || null],
+        );
+
+        // Reduce stock if enabled
+        if (reduce_stock) {
+          await connection.query(
+            'UPDATE parts SET quantity = quantity - ? WHERE id = ?',
+            [quantityNeeded, part.part_id],
+          );
+
+          await connection.query(
+            `INSERT INTO stock_movements 
+             (part_id, movement_type, quantity, reference_type, reference_id, user_id, notes)
+             VALUES (?, 'out', ?, 'production', ?, ?, ?)`,
+            [
+              part.part_id,
+              quantityNeeded,
+              equipmentId,
+              userId,
+              `Equipment production: ${finalModel} (${serial_number || 'no serial'})`,
+            ],
+          );
+        }
       }
-
-      // Get part_color
-      const [partColor] = await connection.query(
-        'SELECT id, quantity, min_stock_level FROM parts_colors WHERE part_id = ? AND color_id = ?',
-        [part_id, color_id]
-      );
-
-      if (partColor.length === 0) {
-        await connection.rollback();
-        return res.status(400).json({
-          success: false,
-          error: `Part ${part_id} with color ${color_id} not found`,
-        });
-      }
-
-      const part_color_id = partColor[0].id;
-      const available_quantity = partColor[0].quantity;
-
-      if (available_quantity < quantity) {
-        await connection.rollback();
-        return res.status(400).json({
-          success: false,
-          error: `Insufficient stock for part ${part_id} (${color_id}). Available: ${available_quantity}, Needed: ${quantity}`,
-        });
-      }
-
-      // =========================
-      // INSERT EQUIPMENT PART
-      // =========================
-      await connection.query(
-        `INSERT INTO equipment_parts 
-         (equipment_id, part_color_id, quantity_needed, notes)
-         VALUES (?, ?, ?, ?)`,
-        [
-          equipment_id,
-          part_color_id,
-          quantity,
-          notes || `Used for equipment: ${model}`,
-        ]
-      );
-
-      // =========================
-      // UPDATE STOCK QUANTITY
-      // =========================
-      await connection.query(
-        'UPDATE parts_colors SET quantity = quantity - ? WHERE id = ?',
-        [quantity, part_color_id]
-      );
-
-      // =========================
-      // RECORD STOCK MOVEMENT (OUT)
-      // =========================
-      await connection.query(
-        `INSERT INTO stock_movements
-         (part_color_id, movement_type, quantity, reference_type, reference_id, user_id, notes)
-         VALUES (?, 'out', ?, 'equipment', ?, ?, ?)`,
-        [
-          part_color_id,
-          quantity,
-          equipment_id,
-          user_id,
-          `Consumed by equipment: ${model}`,
-        ]
-      );
-
-      // =========================
-      // UPDATE STOCK STATUS
-      // =========================
-      await connection.query(
-        `UPDATE parts_colors
-         SET status = CASE
-           WHEN quantity = 0 THEN 'out_of_stock'
-           WHEN quantity <= min_stock_level THEN 'low_stock'
-           ELSE 'in_stock'
-         END
-         WHERE id = ?`,
-        [part_color_id]
-      );
     }
 
     await connection.commit();
 
-    // =========================
-    // RETURN CREATED EQUIPMENT
-    // =========================
-    const [createdEquipment] = await connection.query(
-      `SELECT 
-        e.*,
-        c.name AS category_name,
-        b.name AS brand_name,
-        u.username AS created_by_username,
-        u.full_name AS created_by_name,
-        JSON_ARRAYAGG(
-          JSON_OBJECT(
-            'part_name', p.name,
-            'color_name', col.name,
-            'quantity', ep.quantity_needed,
-            'notes', ep.notes
-          )
-        ) AS parts_used
-       FROM equipment e
-       LEFT JOIN categories c ON e.category_id = c.id
-       LEFT JOIN brands b ON e.brand_id = b.id
-       LEFT JOIN users u ON e.user_id = u.id
-       LEFT JOIN equipment_parts ep ON e.id = ep.equipment_id
-       LEFT JOIN parts_colors pc ON ep.part_color_id = pc.id
-       LEFT JOIN parts p ON pc.part_id = p.id
-       LEFT JOIN colors col ON pc.color_id = col.id
-       WHERE e.id = ?
-       GROUP BY e.id`,
-      [equipment_id]
+    // Fetch created equipment with parts
+    const [created] = await db.query('SELECT * FROM equipment WHERE id = ?', [
+      equipmentId,
+    ]);
+    const [createdParts] = await db.query(
+      `SELECT ep.*, p.name, p.color, p.quantity AS current_stock
+       FROM equipment_parts ep
+       JOIN parts p ON ep.part_id = p.id
+       WHERE ep.equipment_id = ?`,
+      [equipmentId],
     );
 
     res.status(201).json({
       success: true,
-      data: createdEquipment[0],
+      data: {
+        ...created[0],
+        parts: createdParts,
+      },
+      stock_reduced: reduce_stock,
+      created_from_template: templateName,
+      template_saved: save_as_template,
+      new_template_id: newTemplateId,
     });
   } catch (error) {
     await connection.rollback();
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+    res.status(500).json({ success: false, error: error.message });
   } finally {
     connection.release();
   }
 };
 
-// PUT - Update equipment
-exports.updateEquipment = async (req, res) => {
+// PUT update equipment
+exports.update = async (req, res) => {
   try {
     const {
       model,
-      category_id,
-      brand_id,
+      brand,
+      category,
       serial_number,
       year_manufactured,
       production_date,
+      article_id,
       status,
-    } = req.body; // Check if equipment exists
+    } = req.body;
+
     const [existing] = await db.query(
-      'SELECT id FROM equipment WHERE id = ? AND deleted_at IS NULL',
-      [req.params.id]
+      'SELECT * FROM equipment WHERE id = ? AND deleted_at IS NULL',
+      [req.params.id],
     );
+
     if (existing.length === 0) {
-      return res
-        .status(404)
-        .json({ success: false, error: 'Equipment not found' });
-    } // Check for duplicate serial number (excluding current equipment)
-    if (serial_number) {
-      const [duplicate] = await db.query(
-        'SELECT id FROM equipment WHERE serial_number = ? AND id != ? AND deleted_at IS NULL',
-        [serial_number, req.params.id]
-      );
-      if (duplicate.length > 0) {
-        return res.status(400).json({
-          success: false,
-          error: 'Serial number already exists',
-        });
-      }
+      return res.status(404).json({
+        success: false,
+        error: 'Equipment not found',
+      });
     }
-    const [result] = await db.query(
-      'UPDATE equipment SET model = ?, category_id = ?, brand_id = ?, serial_number = ?, year_manufactured = ?, production_date = ?, status = ? WHERE id = ?',
+
+    const equip = existing[0];
+
+    await db.query(
+      `UPDATE equipment SET
+        model = ?,
+        brand = ?,
+        category = ?,
+        serial_number = ?,
+        year_manufactured = ?,
+        production_date = ?,
+        article_id = ?,
+        status = ?
+       WHERE id = ?`,
       [
-        model,
-        category_id,
-        brand_id,
-        serial_number,
-        year_manufactured,
-        production_date,
-        status,
+        model !== undefined ? model : equip.model,
+        brand !== undefined ? brand : equip.brand,
+        category !== undefined ? category : equip.category,
+        serial_number !== undefined ? serial_number : equip.serial_number,
+        year_manufactured !== undefined
+          ? year_manufactured
+          : equip.year_manufactured,
+        production_date !== undefined ? production_date : equip.production_date,
+        article_id !== undefined ? article_id : equip.article_id,
+        status !== undefined ? status : equip.status,
         req.params.id,
-      ]
+      ],
     );
+
+    const [updated] = await db.query('SELECT * FROM equipment WHERE id = ?', [
+      req.params.id,
+    ]);
+
     res.status(200).json({
       success: true,
-      data: {
-        id: req.params.id,
-        model,
-        category_id,
-        brand_id,
-        serial_number,
-        year_manufactured,
-        production_date,
-        status,
-      },
+      data: updated[0],
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
-}; // DELETE - Soft delete equipment
-exports.deleteEquipment = async (req, res) => {
+};
+
+// DELETE equipment (soft delete)
+exports.delete = async (req, res) => {
   try {
     const [result] = await db.query(
       'UPDATE equipment SET deleted_at = NOW() WHERE id = ? AND deleted_at IS NULL',
-      [req.params.id]
+      [req.params.id],
     );
+
     if (result.affectedRows === 0) {
-      return res
-        .status(404)
-        .json({ success: false, error: 'Equipment not found' });
+      return res.status(404).json({
+        success: false,
+        error: 'Equipment not found',
+      });
     }
-    res
-      .status(200)
-      .json({ success: true, message: 'Equipment deleted successfully' });
+
+    res.status(200).json({
+      success: true,
+      message: 'Equipment deleted successfully',
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 };
 
-// GET - Get equipment with parts
-exports.getEquipmentWithParts = async (req, res) => {
+// POST add part to equipment
+exports.addPart = async (req, res) => {
   try {
-    const query = `
-      SELECT 
-        e.id,
-        e.model,
-        e.serial_number,
-        e.brand_id,
-        e.category_id,
-        e.user_id,
-        e.created_at,
-        b.name AS brand_name,
-        c.name AS category_name,
-        u.username AS created_by_username,
-        u.full_name AS created_by_name,
-        JSON_ARRAYAGG(
-          JSON_OBJECT(
-            'part_color_id', ep.part_color_id,
-            'quantity', ep.quantity,
-            'part_name', p.name,
-            'color_name', col.name
-          )
-        ) AS parts
-      FROM equipment e
-      LEFT JOIN brands b ON e.brand_id = b.id
-      LEFT JOIN categories c ON e.category_id = c.id
-      LEFT JOIN users u ON e.user_id = u.id
-      LEFT JOIN equipment_parts ep ON e.id = ep.equipment_id
-      LEFT JOIN parts_colors pc ON ep.part_color_id = pc.id
-      LEFT JOIN parts p ON pc.part_id = p.id
-      LEFT JOIN colors col ON pc.color_id = col.id
-      WHERE e.deleted_at IS NULL
-      GROUP BY e.id, e.model, e.serial_number, e.brand_id, e.category_id, e.user_id, e.created_at, b.name, c.name, u.username, u.full_name
-      ORDER BY e.created_at DESC
-    `;
+    const { part_id, quantity_needed = 1, notes } = req.body;
 
-    const [rows] = await db.query(query);
+    // Check if equipment exists
+    const [equipment] = await db.query(
+      'SELECT id FROM equipment WHERE id = ? AND deleted_at IS NULL',
+      [req.params.id],
+    );
 
-    // Parse JSON_ARRAYAGG results
-    const equipment = rows.map((row) => ({
-      ...row,
-      parts: row.parts
-        ? JSON.parse(row.parts).filter((p) => p.part_color_id !== null)
-        : [],
-    }));
+    if (equipment.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Equipment not found',
+      });
+    }
 
-    res.status(200).json({
+    // Check if part exists
+    const [part] = await db.query(
+      'SELECT id FROM parts WHERE id = ? AND deleted_at IS NULL',
+      [part_id],
+    );
+
+    if (part.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Part not found',
+      });
+    }
+
+    // Check if already added
+    const [existing] = await db.query(
+      'SELECT id FROM equipment_parts WHERE equipment_id = ? AND part_id = ?',
+      [req.params.id, part_id],
+    );
+
+    if (existing.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'This part is already added to this equipment',
+      });
+    }
+
+    await db.query(
+      'INSERT INTO equipment_parts (equipment_id, part_id, quantity_needed, notes) VALUES (?, ?, ?, ?)',
+      [req.params.id, part_id, quantity_needed, notes || null],
+    );
+
+    res.status(201).json({
       success: true,
-      count: equipment.length,
-      data: equipment,
+      message: 'Part added to equipment',
     });
   } catch (error) {
-    console.error('Get equipment with parts error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 };
 
-// GET - Get low stock alerts
-exports.getLowStockAlerts = async (req, res) => {
+// DELETE remove part from equipment
+exports.removePart = async (req, res) => {
   try {
-    const [rows] = await db.query(
-      'SELECT * FROM v_low_stock_alert ORDER BY shortage DESC'
+    const [result] = await db.query(
+      'DELETE FROM equipment_parts WHERE equipment_id = ? AND part_id = ?',
+      [req.params.id, req.params.partId],
     );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Part not found in this equipment',
+      });
+    }
+
     res.status(200).json({
       success: true,
-      count: rows.length,
-      data: rows,
+      message: 'Part removed from equipment',
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
-}; // GET - Get parts inventory
-exports.getPartsInventory = async (req, res) => {
+};
+
+// POST produce equipment (reduce stock)
+exports.produce = async (req, res) => {
+  const connection = await db.getConnection();
+
   try {
-    const [rows] = await db.query(
-      'SELECT * FROM v_parts_inventory ORDER BY part_name, color_name'
+    await connection.beginTransaction();
+
+    const equipmentId = req.params.id;
+    const userId = req.user?.id;
+
+    // Get equipment parts
+    const [parts] = await connection.query(
+      `
+      SELECT ep.part_id, ep.quantity_needed, p.quantity, p.name, p.color
+      FROM equipment_parts ep
+      JOIN parts p ON ep.part_id = p.id
+      WHERE ep.equipment_id = ?
+    `,
+      [equipmentId],
     );
+
+    // Check stock availability
+    const insufficientParts = parts.filter(
+      (p) => p.quantity < p.quantity_needed,
+    );
+    if (insufficientParts.length > 0) {
+      await connection.rollback();
+      return res.status(400).json({
+        success: false,
+        error: 'Insufficient stock',
+        insufficientParts: insufficientParts.map((p) => ({
+          name: p.name,
+          color: p.color,
+          needed: p.quantity_needed,
+          available: p.quantity,
+        })),
+      });
+    }
+
+    // Reduce stock and record movements
+    for (const part of parts) {
+      await connection.query(
+        'UPDATE parts SET quantity = quantity - ? WHERE id = ?',
+        [part.quantity_needed, part.part_id],
+      );
+
+      await connection.query(
+        `INSERT INTO stock_movements 
+         (part_id, movement_type, quantity, reference_type, reference_id, user_id, notes)
+         VALUES (?, 'out', ?, 'production', ?, ?, ?)`,
+        [
+          part.part_id,
+          part.quantity_needed,
+          equipmentId,
+          userId,
+          `Production of equipment #${equipmentId}`,
+        ],
+      );
+    }
+
+    await connection.commit();
+
     res.status(200).json({
       success: true,
-      count: rows.length,
-      data: rows,
+      message: 'Equipment produced successfully',
+      partsUsed: parts.map((p) => ({
+        part_id: p.part_id,
+        name: p.name,
+        color: p.color,
+        quantity_used: p.quantity_needed,
+      })),
     });
   } catch (error) {
+    await connection.rollback();
     res.status(500).json({ success: false, error: error.message });
+  } finally {
+    connection.release();
   }
 };
