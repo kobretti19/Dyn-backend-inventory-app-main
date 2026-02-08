@@ -3,7 +3,7 @@ const router = express.Router();
 const equipmentController = require('../controllers/equipment.controller');
 const { verifyToken } = require('../middleware/auth');
 
-// router.use(verifyToken);
+router.use(verifyToken);
 
 // GET routes
 router.get('/', equipmentController.getAll);

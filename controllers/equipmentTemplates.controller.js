@@ -1,34 +1,37 @@
 const db = require('../db');
 
 // GET all templates
-exports.getAllTemplates = async (req, res) => {
+exports.getAll = async (req, res) => {
   try {
     const [rows] = await db.query(`
-      SELECT 
-        t.id,
-        t.name,
-        t.description,
-        t.category_id,
-        t.brand_id,
-        t.parts_data,
-        t.user_id,
-        t.created_at,
-        t.updated_at,
-        c.name AS category_name,
-        b.name AS brand_name,
-        u.username AS created_by_username
-      FROM equipment_templates t
-      LEFT JOIN categories c ON t.category_id = c.id
-      LEFT JOIN brands b ON t.brand_id = b.id
-      LEFT JOIN users u ON t.user_id = u.id
-      ORDER BY t.name ASC
+      SELECT
+        et.*, 
+        u.username AS created_by
+      FROM equipment_templates et
+      LEFT JOIN users u ON et.user_id = u.id
+      ORDER BY et.name
     `);
 
-    // Parse parts_data JSON for each template
-    const templates = rows.map(row => ({
-      ...row,
-      parts_data: typeof row.parts_data === 'string' ? JSON.parse(row.parts_data) : row.parts_data
-    }));
+    // Parse parts_data JSON (handle both string and object)
+    const templates = rows.map((row) => {
+      let partsData = [];
+      if (row.parts_data) {
+        // Check if already object or string
+        if (typeof row.parts_data === 'string') {
+          try {
+            partsData = JSON.parse(row.parts_data);
+          } catch (e) {
+            partsData = [];
+          }
+        } else {
+          partsData = row.parts_data;
+        }
+      }
+      return {
+        ...row,
+        parts_data: partsData,
+      };
+    });
 
     res.status(200).json({
       success: true,
@@ -36,54 +39,100 @@ exports.getAllTemplates = async (req, res) => {
       data: templates,
     });
   } catch (error) {
-    console.error('Get all templates error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
   }
 };
 
-// GET single template by ID
-exports.getTemplateById = async (req, res) => {
+// GET single template by ID (with parts details)
+exports.getById = async (req, res) => {
   try {
-    const [rows] = await db.query(`
+    const [templates] = await db.query(
+      `
       SELECT 
-        t.*,
-        c.name AS category_name,
-        b.name AS brand_name,
-        u.username AS created_by_username
-      FROM equipment_templates t
-      LEFT JOIN categories c ON t.category_id = c.id
-      LEFT JOIN brands b ON t.brand_id = b.id
-      LEFT JOIN users u ON t.user_id = u.id
-      WHERE t.id = ?
-    `, [req.params.id]);
+        et.*,
+        u.username AS created_by
+      FROM equipment_templates et
+      LEFT JOIN users u ON et.user_id = u.id
+      WHERE et.id = ?
+    `,
+      [req.params.id],
+    );
 
-    if (rows.length === 0) {
+    if (templates.length === 0) {
       return res.status(404).json({
         success: false,
         error: 'Template not found',
       });
     }
 
-    const template = {
-      ...rows[0],
-      parts_data: typeof rows[0].parts_data === 'string' ? JSON.parse(rows[0].parts_data) : rows[0].parts_data
-    };
+    const template = templates[0];
+    let partsData = [];
+
+    // Handle both string and object
+    if (template.parts_data) {
+      if (typeof template.parts_data === 'string') {
+        try {
+          partsData = JSON.parse(template.parts_data);
+        } catch (e) {
+          partsData = [];
+        }
+      } else {
+        partsData = template.parts_data;
+      }
+    }
+
+    // Get full part details
+    if (partsData.length > 0) {
+      const partIds = partsData.map((p) => p.part_id);
+      const [parts] = await db.query(
+        `SELECT * FROM parts WHERE id IN (?) AND deleted_at IS NULL`,
+        [partIds],
+      );
+
+      // Merge quantity info with part details
+      partsData = partsData.map((pd) => {
+        const partInfo = parts.find((p) => p.id === pd.part_id);
+        return {
+          ...pd,
+          part_name: partInfo?.name,
+          part_color: partInfo?.color,
+          part_category: partInfo?.category,
+          sku: partInfo?.sku,
+          purchase_price: partInfo?.purchase_price,
+          current_stock: partInfo?.quantity,
+        };
+      });
+    }
 
     res.status(200).json({
       success: true,
-      data: template,
+      data: {
+        ...template,
+        parts_data: partsData,
+      },
     });
   } catch (error) {
-    console.error('Get template by ID error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 };
 
-// POST - Create new template
-exports.createTemplate = async (req, res) => {
+// POST create template
+exports.create = async (req, res) => {
   try {
-    const { name, description, category_id, brand_id, parts_data } = req.body;
-    const user_id = req.user?.id || null;
+    const {
+      name,
+      description,
+      brand,
+      category,
+      article_id,
+      parts = [],
+      parts_data = [],
+    } = req.body;
+
+    const userId = req.user?.id;
 
     if (!name) {
       return res.status(400).json({
@@ -92,66 +141,147 @@ exports.createTemplate = async (req, res) => {
       });
     }
 
-    if (!parts_data || !Array.isArray(parts_data) || parts_data.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'Parts data is required and must be a non-empty array',
-      });
-    }
+    const partsArray = parts.length > 0 ? parts : parts_data;
 
-    // Check if template with same name exists
-    const [existing] = await db.query(
-      'SELECT id FROM equipment_templates WHERE name = ?',
-      [name]
+    const partsDataJson = JSON.stringify(
+      partsArray.map((p) => ({
+        part_id: p.part_id,
+        quantity: p.quantity || 1,
+      })),
     );
 
-    if (existing.length > 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'A template with this name already exists',
-      });
-    }
-
     const [result] = await db.query(
-      `INSERT INTO equipment_templates (name, description, category_id, brand_id, parts_data, user_id) 
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO equipment_templates 
+       (name, description, brand, category, article_id, parts_data, user_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
         name,
         description || null,
-        category_id || null,
-        brand_id || null,
-        JSON.stringify(parts_data),
-        user_id,
-      ]
+        brand || null,
+        category || null,
+        article_id || null,
+        partsDataJson,
+        userId,
+      ],
     );
+
+    const [created] = await db.query(
+      'SELECT * FROM equipment_templates WHERE id = ?',
+      [result.insertId],
+    );
+
+    // Handle response - check if string or object
+    let responsePartsData = [];
+    if (created[0].parts_data) {
+      if (typeof created[0].parts_data === 'string') {
+        responsePartsData = JSON.parse(created[0].parts_data);
+      } else {
+        responsePartsData = created[0].parts_data;
+      }
+    }
 
     res.status(201).json({
       success: true,
       data: {
-        id: result.insertId,
-        name,
-        description,
-        category_id,
-        brand_id,
-        parts_data,
-        user_id,
+        ...created[0],
+        parts_data: responsePartsData,
       },
     });
   } catch (error) {
-    console.error('Create template error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 };
 
-// PUT - Update template
-exports.updateTemplate = async (req, res) => {
+// POST create template from existing equipment
+exports.createFromEquipment = async (req, res) => {
   try {
-    const { name, description, category_id, brand_id, parts_data } = req.body;
+    const { equipment_id, name, description, article_id } = req.body;
+    const userId = req.user?.id;
 
-    // Check if template exists
+    // Get equipment
+    const [equipment] = await db.query(
+      'SELECT * FROM equipment WHERE id = ? AND deleted_at IS NULL',
+      [equipment_id],
+    );
+
+    if (equipment.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Equipment not found',
+      });
+    }
+
+    // Get equipment parts
+    const [parts] = await db.query(
+      'SELECT part_id, quantity_needed FROM equipment_parts WHERE equipment_id = ?',
+      [equipment_id],
+    );
+
+    const partsData = JSON.stringify(
+      parts.map((p) => ({
+        part_id: p.part_id,
+        quantity: p.quantity_needed,
+      })),
+    );
+
+    const [result] = await db.query(
+      `INSERT INTO equipment_templates 
+       (name, description, brand, category, article_id, parts_data, user_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        name || `${equipment[0].model} Template`,
+        description || null,
+        equipment[0].brand,
+        equipment[0].category,
+        article_id || equipment[0].article_id,
+        partsData,
+        userId,
+      ],
+    );
+
+    const [created] = await db.query(
+      'SELECT * FROM equipment_templates WHERE id = ?',
+      [result.insertId],
+    );
+
+    // Fixed: Handle both string and object
+    let responsePartsData = [];
+    if (created[0].parts_data) {
+      if (typeof created[0].parts_data === 'string') {
+        responsePartsData = JSON.parse(created[0].parts_data);
+      } else {
+        responsePartsData = created[0].parts_data;
+      }
+    }
+
+    res.status(201).json({
+      success: true,
+      data: {
+        ...created[0],
+        parts_data: responsePartsData,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// PUT update template
+exports.update = async (req, res) => {
+  try {
+    const {
+      name,
+      description,
+      brand,
+      category,
+      article_id,
+      parts,
+      parts_data,
+    } = req.body;
+
     const [existing] = await db.query(
       'SELECT * FROM equipment_templates WHERE id = ?',
-      [req.params.id]
+      [req.params.id],
     );
 
     if (existing.length === 0) {
@@ -161,57 +291,172 @@ exports.updateTemplate = async (req, res) => {
       });
     }
 
-    // Check if new name conflicts with another template
-    if (name && name !== existing[0].name) {
-      const [nameCheck] = await db.query(
-        'SELECT id FROM equipment_templates WHERE name = ? AND id != ?',
-        [name, req.params.id]
-      );
+    const template = existing[0];
 
-      if (nameCheck.length > 0) {
-        return res.status(400).json({
-          success: false,
-          error: 'A template with this name already exists',
-        });
+    // Handle parts_data - keep existing or update
+    let partsDataJson = null;
+
+    // Check if new parts provided
+    const newParts = parts || parts_data;
+
+    if (newParts !== undefined) {
+      // New parts provided - stringify them
+      partsDataJson = JSON.stringify(
+        newParts.map((p) => ({
+          part_id: p.part_id,
+          quantity: p.quantity || 1,
+        })),
+      );
+    } else {
+      // Keep existing - make sure it's a string
+      if (template.parts_data) {
+        if (typeof template.parts_data === 'string') {
+          partsDataJson = template.parts_data;
+        } else {
+          partsDataJson = JSON.stringify(template.parts_data);
+        }
+      } else {
+        partsDataJson = '[]';
       }
     }
 
-    const finalName = name !== undefined ? name : existing[0].name;
-    const finalDescription = description !== undefined ? description : existing[0].description;
-    const finalCategoryId = category_id !== undefined ? category_id : existing[0].category_id;
-    const finalBrandId = brand_id !== undefined ? brand_id : existing[0].brand_id;
-    const finalPartsData = parts_data !== undefined ? JSON.stringify(parts_data) : existing[0].parts_data;
-
     await db.query(
-      `UPDATE equipment_templates 
-       SET name = ?, description = ?, category_id = ?, brand_id = ?, parts_data = ?
+      `UPDATE equipment_templates SET
+        name = ?,
+        description = ?,
+        brand = ?,
+        category = ?,
+        article_id = ?,
+        parts_data = ?
        WHERE id = ?`,
-      [finalName, finalDescription, finalCategoryId, finalBrandId, finalPartsData, req.params.id]
+      [
+        name !== undefined ? name : template.name,
+        description !== undefined ? description : template.description,
+        brand !== undefined ? brand : template.brand,
+        category !== undefined ? category : template.category,
+        article_id !== undefined ? article_id : template.article_id,
+        partsDataJson,
+        req.params.id,
+      ],
     );
+
+    const [updated] = await db.query(
+      'SELECT * FROM equipment_templates WHERE id = ?',
+      [req.params.id],
+    );
+
+    // Handle response - check if string or object
+    let responsePartsData = [];
+    if (updated[0].parts_data) {
+      if (typeof updated[0].parts_data === 'string') {
+        responsePartsData = JSON.parse(updated[0].parts_data);
+      } else {
+        responsePartsData = updated[0].parts_data;
+      }
+    }
 
     res.status(200).json({
       success: true,
       data: {
-        id: parseInt(req.params.id),
-        name: finalName,
-        description: finalDescription,
-        category_id: finalCategoryId,
-        brand_id: finalBrandId,
-        parts_data: parts_data || (typeof existing[0].parts_data === 'string' ? JSON.parse(existing[0].parts_data) : existing[0].parts_data),
+        ...updated[0],
+        parts_data: responsePartsData,
       },
     });
   } catch (error) {
-    console.error('Update template error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 };
 
-// DELETE - Delete template
-exports.deleteTemplate = async (req, res) => {
+// POST create equipment from template
+exports.createEquipment = async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const { serial_number, year_manufactured, production_date } = req.body;
+
+    const userId = req.user?.id;
+
+    // Get template
+    const [templates] = await connection.query(
+      'SELECT * FROM equipment_templates WHERE id = ?',
+      [req.params.id],
+    );
+
+    if (templates.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({
+        success: false,
+        error: 'Template not found',
+      });
+    }
+
+    const template = templates[0];
+
+    // Handle both string and object
+    let partsData = [];
+    if (template.parts_data) {
+      if (typeof template.parts_data === 'string') {
+        partsData = JSON.parse(template.parts_data);
+      } else {
+        partsData = template.parts_data;
+      }
+    }
+
+    // Create equipment
+    const [result] = await connection.query(
+      `INSERT INTO equipment 
+       (model, brand, category, serial_number, year_manufactured, production_date, article_id, user_Id, status,template_id,created_from_template)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active',?,?)`,
+      [
+        template.name,
+        template.brand,
+        template.category,
+        serial_number || null,
+        year_manufactured || null,
+        production_date || null,
+        template.article_id,
+        userId,
+        template.id,
+        template.name,
+      ],
+    );
+
+    const equipmentId = result.insertId;
+
+    // Add parts from template
+    for (const part of partsData) {
+      await connection.query(
+        'INSERT INTO equipment_parts (equipment_id, part_id, quantity_needed) VALUES (?, ?, ?)',
+        [equipmentId, part.part_id, part.quantity || 1],
+      );
+    }
+
+    await connection.commit();
+
+    const [created] = await db.query('SELECT * FROM equipment WHERE id = ?', [
+      equipmentId,
+    ]);
+
+    res.status(201).json({
+      success: true,
+      data: created[0],
+    });
+  } catch (error) {
+    await connection.rollback();
+    res.status(500).json({ success: false, error: error.message });
+  } finally {
+    connection.release();
+  }
+};
+
+// DELETE template
+exports.delete = async (req, res) => {
   try {
     const [result] = await db.query(
       'DELETE FROM equipment_templates WHERE id = ?',
-      [req.params.id]
+      [req.params.id],
     );
 
     if (result.affectedRows === 0) {
@@ -226,100 +471,6 @@ exports.deleteTemplate = async (req, res) => {
       message: 'Template deleted successfully',
     });
   } catch (error) {
-    console.error('Delete template error:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-};
-
-// POST - Create template from existing equipment
-exports.createFromEquipment = async (req, res) => {
-  try {
-    const { equipment_id, template_name } = req.body;
-    const user_id = req.user?.id || null;
-
-    if (!equipment_id || !template_name) {
-      return res.status(400).json({
-        success: false,
-        error: 'Equipment ID and template name are required',
-      });
-    }
-
-    // Get equipment details
-    const [equipment] = await db.query(
-      'SELECT * FROM equipment WHERE id = ?',
-      [equipment_id]
-    );
-
-    if (equipment.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'Equipment not found',
-      });
-    }
-
-    // Get parts used in this equipment
-    const [partsUsed] = await db.query(`
-      SELECT 
-        ep.part_id,
-        ep.color_id,
-        ep.quantity,
-        ep.notes,
-        p.name AS part_name,
-        c.name AS color_name
-      FROM equipment_parts ep
-      LEFT JOIN parts p ON ep.part_id = p.id
-      LEFT JOIN colors c ON ep.color_id = c.id
-      WHERE ep.equipment_id = ?
-    `, [equipment_id]);
-
-    if (partsUsed.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'This equipment has no parts to save as template',
-      });
-    }
-
-    // Check if template name already exists
-    const [existing] = await db.query(
-      'SELECT id FROM equipment_templates WHERE name = ?',
-      [template_name]
-    );
-
-    if (existing.length > 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'A template with this name already exists',
-      });
-    }
-
-    // Create template
-    const [result] = await db.query(
-      `INSERT INTO equipment_templates (name, description, category_id, brand_id, parts_data, user_id) 
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [
-        template_name,
-        `Template created from ${equipment[0].model_name}`,
-        equipment[0].category_id,
-        equipment[0].brand_id,
-        JSON.stringify(partsUsed),
-        user_id,
-      ]
-    );
-
-    res.status(201).json({
-      success: true,
-      data: {
-        id: result.insertId,
-        name: template_name,
-        description: `Template created from ${equipment[0].model_name}`,
-        category_id: equipment[0].category_id,
-        brand_id: equipment[0].brand_id,
-        parts_data: partsUsed,
-        user_id,
-      },
-    });
-  } catch (error) {
-    console.error('Create template from equipment error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 };

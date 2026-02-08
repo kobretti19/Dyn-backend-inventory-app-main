@@ -3,7 +3,7 @@ const router = express.Router();
 const partsController = require('../controllers/parts.controller');
 const { verifyToken } = require('../middleware/auth');
 
-// router.use(verifyToken);
+router.use(verifyToken);
 
 // GET routes
 router.get('/', partsController.getAll);

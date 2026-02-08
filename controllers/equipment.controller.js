@@ -1,30 +1,22 @@
 const db = require('../db');
 
-// GET all equipment
+// GET all equipment with user info
 exports.getAll = async (req, res) => {
   try {
-    const [rows] = await db.query(`
+    const [equipment] = await db.query(`
       SELECT 
-        id,
-        model,
-        brand,
-        category,
-        serial_number,
-        year_manufactured,
-        production_date,
-        article_id,
-        status,
-        created_at,
-        updated_at
-      FROM equipment 
-      WHERE deleted_at IS NULL
-      ORDER BY model
+        e.*,
+        u.username AS created_by_username,
+        u.full_name AS created_by_name,
+        (SELECT COUNT(*) FROM equipment_parts WHERE equipment_id = e.id) AS parts_count
+      FROM equipment e
+      LEFT JOIN users u ON e.user_id = u.id
+      ORDER BY e.created_at DESC
     `);
 
-    res.status(200).json({
+    res.json({
       success: true,
-      count: rows.length,
-      data: rows,
+      data: equipment,
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -35,7 +27,14 @@ exports.getAll = async (req, res) => {
 exports.getById = async (req, res) => {
   try {
     const [equipment] = await db.query(
-      'SELECT * FROM equipment WHERE id = ? AND deleted_at IS NULL',
+      `SELECT 
+        e.*, 
+    et.name AS template_name, 
+    et.category AS template_category
+    FROM equipment AS e
+    JOIN equipment_templates AS et ON et.id = e.template_id 
+    WHERE e.id = 12 
+    AND e.deleted_at IS NULL`,
       [req.params.id],
     );
 
@@ -128,7 +127,6 @@ exports.getCategories = async (req, res) => {
   }
 };
 
-// POST create new equipment (with optional template)
 exports.create = async (req, res) => {
   const connection = await db.getConnection();
 
@@ -136,225 +134,136 @@ exports.create = async (req, res) => {
     await connection.beginTransaction();
 
     const {
-      template_id, // Select existing template
       model,
+      serial_number,
       brand,
       category,
-      serial_number,
-      year_manufactured,
-      production_date,
       article_id,
-      status = 'active',
+      template_id,
       parts = [],
-      reduce_stock = true,
-      save_as_template = false, // NEW: save configuration as template
-      template_name, // NEW: name for new template (optional)
+      save_as_template,
+      template_name,
+      production_date,
+      year_manufactured,
     } = req.body;
 
     const userId = req.user?.id;
 
-    let finalModel = model;
-    let finalBrand = brand;
-    let finalCategory = category;
-    let finalArticleId = article_id;
-    let finalParts = parts;
-    let templateName = null;
-    let usedTemplateId = template_id || null;
-    let newTemplateId = null;
+    if (!model) {
+      return res
+        .status(400)
+        .json({ success: false, error: 'Model name is required' });
+    }
 
-    // If template_id provided, get template data
+    // 1. Get Template Details
+    let templateParts = [];
+    let templateNameAlias = null;
+
     if (template_id) {
-      const [templates] = await connection.query(
-        'SELECT * FROM equipment_templates WHERE id = ?',
+      const [templateRows] = await connection.query(
+        'SELECT name, parts_data FROM equipment_templates WHERE id = ?',
         [template_id],
       );
 
-      if (templates.length === 0) {
-        await connection.rollback();
-        return res.status(404).json({
-          success: false,
-          error: 'Template not found',
-        });
-      }
-
-      const template = templates[0];
-      templateName = template.name;
-
-      // Use template values (can be overridden by request)
-      finalModel = model || template.name;
-      finalBrand = brand || template.brand;
-      finalCategory = category || template.category;
-      finalArticleId = article_id || template.article_id;
-
-      // Use template parts if no parts provided
-      if (parts.length === 0) {
-        const templateParts = JSON.parse(template.parts_data || '[]');
-        finalParts = templateParts.map((p) => ({
-          part_id: p.part_id,
-          quantity_needed: p.quantity || 1,
-        }));
-      }
-    }
-
-    if (!finalModel) {
-      await connection.rollback();
-      return res.status(400).json({
-        success: false,
-        error: 'Model name is required (or select a template)',
-      });
-    }
-
-    // If save_as_template is true, create a new template first
-    if (save_as_template && !template_id) {
-      const partsData = JSON.stringify(
-        finalParts.map((p) => ({
-          part_id: p.part_id,
-          quantity: p.quantity_needed || p.quantity || 1,
-        })),
-      );
-
-      const [templateResult] = await connection.query(
-        `INSERT INTO equipment_templates 
-         (name, description, brand, category, article_id, parts_data, user_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [
-          template_name || finalModel,
-          `Template created from equipment: ${finalModel}`,
-          finalBrand || null,
-          finalCategory || null,
-          finalArticleId || null,
-          partsData,
-          userId,
-        ],
-      );
-
-      newTemplateId = templateResult.insertId;
-      usedTemplateId = newTemplateId;
-      templateName = template_name || finalModel;
-    }
-
-    // If reducing stock, check availability first
-    if (reduce_stock && finalParts.length > 0) {
-      const insufficientParts = [];
-
-      for (const part of finalParts) {
-        const [partData] = await connection.query(
-          'SELECT id, name, color, quantity FROM parts WHERE id = ? AND deleted_at IS NULL',
-          [part.part_id],
-        );
-
-        if (partData.length === 0) {
-          await connection.rollback();
-          return res.status(404).json({
-            success: false,
-            error: `Part with ID ${part.part_id} not found`,
-          });
-        }
-
-        const needed = part.quantity_needed || part.quantity || 1;
-        if (partData[0].quantity < needed) {
-          insufficientParts.push({
-            part_id: part.part_id,
-            name: partData[0].name,
-            color: partData[0].color,
-            needed: needed,
-            available: partData[0].quantity,
-          });
+      if (templateRows.length > 0) {
+        templateNameAlias = templateRows[0].name;
+        // Safety check for JSON parsing
+        try {
+          templateParts =
+            typeof templateRows[0].parts_data === 'string'
+              ? JSON.parse(templateRows[0].parts_data)
+              : templateRows[0].parts_data;
+        } catch (e) {
+          templateParts = [];
         }
       }
-
-      if (insufficientParts.length > 0) {
-        await connection.rollback();
-        return res.status(400).json({
-          success: false,
-          error: 'Insufficient stock for some parts',
-          insufficientParts,
-        });
-      }
     }
 
-    // Create equipment with template reference
-    const [result] = await connection.query(
+    const partsToUse = parts.length > 0 ? parts : templateParts;
+
+    // 2. Insert Equipment
+    const [equipmentResult] = await connection.query(
       `INSERT INTO equipment 
-       (template_id, created_from_template, model, brand, category, serial_number, year_manufactured, production_date, article_id, status)
+       (model, serial_number, brand, category, article_id, template_id, created_from_template, user_id, production_date, year_manufactured)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        usedTemplateId,
-        templateName || null,
-        finalModel,
-        finalBrand || null,
-        finalCategory || null,
+        model,
         serial_number || null,
-        year_manufactured || null,
+        brand || null,
+        category || null,
+        article_id || null,
+        template_id || null,
+        templateNameAlias,
+        userId,
         production_date || null,
-        finalArticleId || null,
-        status,
+        year_manufactured || null,
       ],
     );
 
-    const equipmentId = result.insertId;
+    const equipmentId = equipmentResult.insertId;
 
-    // Add parts and reduce stock
-    if (finalParts.length > 0) {
-      for (const part of finalParts) {
-        const quantityNeeded = part.quantity_needed || part.quantity || 1;
+    // 3. Process Parts (Improved Loop)
+    if (partsToUse && partsToUse.length > 0) {
+      for (const part of partsToUse) {
+        const partId = part.part_id;
+        // Ensure quantity is a number to avoid string concatenation issues in SQL
+        const qty = Number(part.quantity_needed || 1);
+
+        if (!partId) continue; // Skip invalid entries
 
         // Add to equipment_parts
         await connection.query(
-          'INSERT INTO equipment_parts (equipment_id, part_id, quantity_needed, notes) VALUES (?, ?, ?, ?)',
-          [equipmentId, part.part_id, quantityNeeded, part.notes || null],
+          `INSERT INTO equipment_parts (equipment_id, part_id, quantity_needed, notes) VALUES (?, ?, ?, ?)`,
+          [equipmentId, partId, qty, part.notes || null],
         );
 
-        // Reduce stock if enabled
-        if (reduce_stock) {
-          await connection.query(
-            'UPDATE parts SET quantity = quantity - ? WHERE id = ?',
-            [quantityNeeded, part.part_id],
-          );
+        // Reduce stock & Log movement
+        await connection.query(
+          `UPDATE parts SET quantity = quantity - ? WHERE id = ?`,
+          [qty, partId],
+        );
 
-          await connection.query(
-            `INSERT INTO stock_movements 
-             (part_id, movement_type, quantity, reference_type, reference_id, user_id, notes)
-             VALUES (?, 'out', ?, 'production', ?, ?, ?)`,
-            [
-              part.part_id,
-              quantityNeeded,
-              equipmentId,
-              userId,
-              `Equipment production: ${finalModel} (${serial_number || 'no serial'})`,
-            ],
-          );
-        }
+        await connection.query(
+          `INSERT INTO stock_movements (part_id, movement_type, quantity, reference_type, reference_id, user_id, notes)
+           VALUES (?, 'out', ?, 'production', ?, ?, ?)`,
+          [partId, qty, equipmentId, userId, `Equipment: ${model}`],
+        );
       }
+    }
+
+    // 4. Save as Template Logic
+    if (save_as_template && template_name) {
+      const partsDataJson = JSON.stringify(
+        partsToUse.map((p) => ({
+          part_id: p.part_id,
+          quantity_needed: Number(p.quantity_needed || 1),
+          notes: p.notes || '',
+          // Avoid saving bulky part names/colors in JSON if possible; just IDs are cleaner
+        })),
+      );
+
+      await connection.query(
+        `INSERT INTO equipment_templates (name, brand, category, parts_data, user_id) VALUES (?, ?, ?, ?, ?)`,
+        [template_name, brand || null, category || null, partsDataJson, userId],
+      );
     }
 
     await connection.commit();
 
-    // Fetch created equipment with parts
-    const [created] = await db.query('SELECT * FROM equipment WHERE id = ?', [
-      equipmentId,
-    ]);
-    const [createdParts] = await db.query(
-      `SELECT ep.*, p.name, p.color, p.quantity AS current_stock
-       FROM equipment_parts ep
-       JOIN parts p ON ep.part_id = p.id
-       WHERE ep.equipment_id = ?`,
+    // 5. Final Response (Fetch specific columns to avoid '3 created_at' issue)
+    const [finalData] = await connection.query(
+      `
+      SELECT e.*, u.username AS created_by_username 
+      FROM equipment e 
+      LEFT JOIN users u ON e.user_id = u.id 
+      WHERE e.id = ?`,
       [equipmentId],
     );
 
-    res.status(201).json({
-      success: true,
-      data: {
-        ...created[0],
-        parts: createdParts,
-      },
-      stock_reduced: reduce_stock,
-      created_from_template: templateName,
-      template_saved: save_as_template,
-      new_template_id: newTemplateId,
-    });
+    res.status(201).json({ success: true, data: finalData[0] });
   } catch (error) {
     await connection.rollback();
+    console.error('Creation Error:', error); // Log this to your terminal!
     res.status(500).json({ success: false, error: error.message });
   } finally {
     connection.release();

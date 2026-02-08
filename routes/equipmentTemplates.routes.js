@@ -7,21 +7,24 @@ const { verifyToken } = require('../middleware/auth');
 router.use(verifyToken);
 
 // GET all templates
-router.get('/', templatesController.getAllTemplates);
+router.get('/', templatesController.getAll);
 
 // GET single template
-router.get('/:id', templatesController.getTemplateById);
+router.get('/:id', templatesController.getById);
 
 // POST create new template
-router.post('/', templatesController.createTemplate);
+router.post('/', templatesController.create);
 
-// POST create template from existing equipment
+// POST create template from existing equipment (MUST be before /:id routes)
 router.post('/from-equipment', templatesController.createFromEquipment);
 
+// POST create equipment from template
+router.post('/:id/create-equipment', templatesController.createEquipment);
+
 // PUT update template
-router.put('/:id', templatesController.updateTemplate);
+router.put('/:id', templatesController.update);
 
 // DELETE template
-router.delete('/:id', templatesController.deleteTemplate);
+router.delete('/:id', templatesController.delete);
 
 module.exports = router;

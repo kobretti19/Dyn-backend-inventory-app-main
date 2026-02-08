@@ -7,20 +7,14 @@ const { verifyToken, isAdminOrManager } = require('../middleware/auth');
 router.use(verifyToken);
 
 // GET routes
-router.get('/movements', stockController.getAllStockMovements);
-router.get(
-  '/movements/:partColorId',
-  stockController.getStockMovementsByPartColor,
-);
-router.get(
-  '/movements/:partColorId',
-  stockController.getStockMovementsByPartColor,
-);
+router.get('/movements', stockController.getMovements);
+router.get('/movements/:partId', stockController.getMovementsByPart);
 router.get('/levels', stockController.getStockLevels);
 router.get('/alerts', stockController.getLowStockAlerts);
+router.get('/summary', stockController.getSummary);
 
 // POST routes (admin/manager only)
-router.post('/add', isAdminOrManager, stockController.addStock);
-router.post('/adjust', isAdminOrManager, stockController.adjustStock);
+router.post('/add', stockController.addStock);
+router.post('/adjust', stockController.adjustStock);
 
 module.exports = router;

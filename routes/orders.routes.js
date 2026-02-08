@@ -3,25 +3,20 @@ const router = express.Router();
 const ordersController = require('../controllers/orders.controller');
 const { verifyToken } = require('../middleware/auth');
 
-// All routes require authentication
 router.use(verifyToken);
 
 // GET routes
-router.get('/', ordersController.getAllOrders);
-router.get('/my-orders', ordersController.getMyOrders);
-router.get('/stats', ordersController.getOrderStats);
-router.get('/backorders', ordersController.getBackorders);
-router.get('/:id', ordersController.getOrderById);
-router.get('/:id/history', ordersController.getOrderHistory);
+router.get('/', ordersController.getAll);
+router.get('/stats', ordersController.getStats);
+router.get('/:id', ordersController.getById);
 
 // POST routes
-router.post('/', ordersController.createOrder);
+router.post('/', ordersController.create);
 
 // PUT routes
-router.put('/:id', ordersController.updateOrder);
-router.put('/:id/status', ordersController.updateOrderStatus);
+router.put('/:id/status', ordersController.updateStatus);
 
 // DELETE routes
-router.delete('/:id', ordersController.deleteOrder);
+router.delete('/:id', ordersController.delete);
 
 module.exports = router;
