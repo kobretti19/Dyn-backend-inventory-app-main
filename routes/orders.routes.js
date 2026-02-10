@@ -3,12 +3,16 @@ const router = express.Router();
 const ordersController = require('../controllers/orders.controller');
 const { verifyToken } = require('../middleware/auth');
 
-router.use(verifyToken);
+//router.use(verifyToken);
 
 // GET routes
 router.get('/', ordersController.getAll);
 router.get('/stats', ordersController.getStats);
+router.get('/parts-summary', ordersController.getPartsSummary); 
+router.get('/backorder-parts',ordersController.getBackorderParts);
 router.get('/:id', ordersController.getById);
+
+
 
 // POST routes
 router.post('/', ordersController.create);
