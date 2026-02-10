@@ -198,9 +198,8 @@ exports.create = async (req, res) => {
   }
 };
 
-
-
 // PUT update order status
+
 exports.updateStatus = async (req, res) => {
   const connection = await db.getConnection();
 
@@ -221,7 +220,7 @@ exports.updateStatus = async (req, res) => {
 
     const [orders] = await connection.query(
       'SELECT * FROM orders WHERE id = ?',
-      [parseInt(orderId)]
+      [parseInt(orderId)],
     );
 
     if (orders.length === 0) {
@@ -250,102 +249,110 @@ exports.updateStatus = async (req, res) => {
     });
 
     // Handle delivery items
-    if ((status === 'delivered' || status === 'partial') && items && items.length > 0) {
+    if (
+      (status === 'delivered' || status === 'partial') &&
+      items &&
+      items.length > 0
+    ) {
       for (const item of items) {
         const receivingQty = parseInt(item.quantity_delivered) || 0;
 
         // Get current order item data
         const [orderItemRows] = await connection.query(
           'SELECT * FROM order_items WHERE id = ?',
-          [item.id]
+          [item.id],
         );
 
         if (orderItemRows.length === 0) continue;
 
         const orderItem = orderItemRows[0];
-        const ordered = orderItem.quantity_ordered || 0;
+        const ordered = orderItem.quantity_ordered || 0; // The original quantity from creation
         const alreadyDelivered = orderItem.quantity_delivered || 0;
 
         // Calculate new totals
         const newTotalDelivered = alreadyDelivered + receivingQty;
+
+        // FIXED: Backorder is Original Ordered - Total Delivered. We do NOT update quantity_ordered.
         const newBackorder = Math.max(0, ordered - newTotalDelivered);
 
-        // Determine item status based on THIS ITEM's quantities
+        // Determine item status based on ORIGINAL quantities
         let itemStatus;
         if (item.item_status === 'cancelled') {
-          // If manually set to cancelled, keep it
           itemStatus = 'cancelled';
-        } else if (newTotalDelivered === 0) {
-          itemStatus = 'backorder';
         } else if (newTotalDelivered >= ordered) {
-          // Delivered >= Ordered means fully delivered (even if over-delivered)
           itemStatus = 'delivered';
-        } else if (newBackorder > 0) {
+        } else if (newTotalDelivered > 0) {
           itemStatus = 'partial';
         } else {
-          itemStatus = 'delivered';
+          itemStatus = 'pending';
         }
 
-        console.log(`Item ${item.id}: ordered=${ordered}, delivered=${newTotalDelivered}, backorder=${newBackorder}, status=${itemStatus}`);
-
-        // Update order item
+        // Update order item - NOT UPDATING quantity_ordered here keeps your data consistent
         await connection.query(
           `UPDATE order_items 
            SET quantity_delivered = ?, 
                quantity_backorder = ?,
                status = ?
            WHERE id = ?`,
-          [newTotalDelivered, newBackorder, itemStatus, item.id]
+          [newTotalDelivered, newBackorder, itemStatus, item.id],
         );
 
         // Add to stock if receiving
         if (receivingQty > 0) {
           const partId = orderItem.part_id;
 
-          // Update part quantity
           await connection.query(
             'UPDATE parts SET quantity = quantity + ? WHERE id = ?',
-            [receivingQty, partId]
+            [receivingQty, partId],
           );
 
-          // Record stock movement
           await connection.query(
             `INSERT INTO stock_movements 
              (part_id, movement_type, quantity, reference_type, reference_id, user_id, notes)
              VALUES (?, 'in', ?, 'order', ?, ?, ?)`,
-            [partId, receivingQty, orderId, userId, `Order ${order.order_number} delivery`]
+            [
+              partId,
+              receivingQty,
+              orderId,
+              userId,
+              `Order ${order.order_number} delivery`,
+            ],
           );
         }
       }
     }
 
-    // Calculate OVERALL order status based on ALL items
+    // FINAL STEP: Calculate OVERALL order status based on item completion
     const [allItems] = await connection.query(
-      'SELECT status, quantity_ordered, quantity_delivered, quantity_backorder FROM order_items WHERE order_id = ?',
-      [orderId]
+      'SELECT status, quantity_ordered, quantity_delivered FROM order_items WHERE order_id = ?',
+      [orderId],
     );
 
-    let overallStatus = status; // Default to requested status
+    let overallStatus = status;
 
     if (allItems.length > 0) {
-      const allDelivered = allItems.every((i) => i.status === 'delivered' || i.quantity_delivered >= i.quantity_ordered);
-      const allCancelled = allItems.every((i) => i.status === 'cancelled');
+      const allDelivered = allItems.every(
+        (i) =>
+          i.status === 'delivered' ||
+          i.quantity_delivered >= i.quantity_ordered,
+      );
       const someDelivered = allItems.some((i) => i.quantity_delivered > 0);
-      const hasBackorder = allItems.some((i) => i.quantity_backorder > 0);
+      const allCancelled = allItems.every((i) => i.status === 'cancelled');
 
       if (allCancelled) {
         overallStatus = 'cancelled';
       } else if (allDelivered) {
         overallStatus = 'delivered';
-      } else if (someDelivered || hasBackorder) {
+      } else if (someDelivered) {
         overallStatus = 'partial';
+      } else {
+        overallStatus = 'ordered'; // or 'pending' depending on your flow
       }
     }
 
-    // Update order status
     await connection.query(
       `UPDATE orders SET status = ?, status_history = ? WHERE id = ?`,
-      [overallStatus, JSON.stringify(statusHistory), parseInt(orderId)]
+      [overallStatus, JSON.stringify(statusHistory), parseInt(orderId)],
     );
 
     await connection.commit();
@@ -392,7 +399,6 @@ exports.delete = async (req, res) => {
   }
 };
 
-
 // GET all order items with part details
 exports.getPartsSummary = async (req, res) => {
   try {
@@ -402,16 +408,21 @@ exports.getPartsSummary = async (req, res) => {
         p.name AS part_name,
         p.color AS part_color,
         p.sku,
+        p.supplier,
         p.quantity AS current_stock,
         p.min_stock_level,
         p.purchase_price,
         oi.id AS order_item_id,
         oi.quantity_ordered,
         oi.quantity_delivered,
-        oi.quantity_backorder,
+        GREATEST(0, oi.quantity_ordered - oi.quantity_delivered) AS quantity_backorder,
         oi.unit_price,
         oi.notes AS item_notes,
-        oi.status AS item_status,
+        CASE
+          WHEN oi.quantity_delivered >= oi.quantity_ordered THEN 'delivered'
+          WHEN oi.quantity_delivered > 0 AND oi.quantity_delivered < oi.quantity_ordered THEN 'partial'
+          ELSE 'pending'
+        END AS item_status,
         o.id AS order_id,
         o.order_number,
         o.status AS order_status,
@@ -427,16 +438,31 @@ exports.getPartsSummary = async (req, res) => {
       ORDER BY o.created_at DESC
     `);
 
+    // Get unique suppliers for filter dropdown
+    const suppliers = [
+      ...new Set(items.filter((i) => i.supplier).map((i) => i.supplier)),
+    ].sort();
+
     // Calculate totals
     const totals = {
       total_items: items.length,
-      total_ordered: items.reduce((sum, i) => sum + (i.quantity_ordered || 0), 0),
-      total_delivered: items.reduce((sum, i) => sum + (i.quantity_delivered || 0), 0),
-      total_backorder: items.reduce((sum, i) => sum + (i.quantity_backorder || 0), 0),
-      total_value: items.reduce((sum, i) => sum + ((i.unit_price || 0) * (i.quantity_ordered || 0)), 0),
+      total_ordered: items.reduce(
+        (sum, i) => sum + (i.quantity_ordered || 0),
+        0,
+      ),
+      total_delivered: items.reduce(
+        (sum, i) => sum + (i.quantity_delivered || 0),
+        0,
+      ),
+      total_backorder: items.reduce(
+        (sum, i) => sum + (i.quantity_backorder || 0),
+        0,
+      ),
+      total_value: items.reduce(
+        (sum, i) => sum + (i.unit_price || 0) * (i.quantity_ordered || 0),
+        0,
+      ),
     };
-
-    console.log(totals)
 
     // Group by part for summary
     const partsSummary = {};
@@ -447,6 +473,7 @@ exports.getPartsSummary = async (req, res) => {
           part_name: item.part_name,
           part_color: item.part_color,
           sku: item.sku,
+          supplier: item.supplier,
           current_stock: item.current_stock,
           min_stock_level: item.min_stock_level,
           total_ordered: 0,
@@ -456,25 +483,28 @@ exports.getPartsSummary = async (req, res) => {
         };
       }
       partsSummary[item.part_id].total_ordered += item.quantity_ordered || 0;
-      partsSummary[item.part_id].total_delivered += item.quantity_delivered || 0;
-      partsSummary[item.part_id].total_backorder += item.quantity_backorder || 0;
+      partsSummary[item.part_id].total_delivered +=
+        item.quantity_delivered || 0;
+      partsSummary[item.part_id].total_backorder +=
+        item.quantity_backorder || 0;
       partsSummary[item.part_id].order_count++;
     });
 
     res.status(200).json({
       success: true,
       data: {
-        items,  // All order items
-        parts: Object.values(partsSummary),  // Grouped by part
+        items,
+        parts: Object.values(partsSummary),
         totals,
+        suppliers,
       },
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 };
-
 // GET backorder items only
+
 exports.getBackorderParts = async (req, res) => {
   try {
     const [items] = await db.query(`
@@ -483,13 +513,19 @@ exports.getBackorderParts = async (req, res) => {
         p.name AS part_name,
         p.color AS part_color,
         p.sku,
+        p.supplier,
         p.quantity AS current_stock,
         p.purchase_price,
         oi.id AS order_item_id,
         oi.quantity_ordered,
         oi.quantity_delivered,
-        oi.quantity_backorder,
+        GREATEST(0, oi.quantity_ordered - oi.quantity_delivered) AS quantity_backorder,
         oi.notes AS item_notes,
+        CASE
+          WHEN oi.quantity_delivered >= oi.quantity_ordered THEN 'delivered'
+          WHEN oi.quantity_delivered > 0 AND oi.quantity_delivered < oi.quantity_ordered THEN 'partial'
+          ELSE 'pending'
+        END AS item_status,
         o.id AS order_id,
         o.order_number,
         o.status AS order_status,
@@ -499,23 +535,33 @@ exports.getBackorderParts = async (req, res) => {
       JOIN parts p ON oi.part_id = p.id
       JOIN orders o ON oi.order_id = o.id
       LEFT JOIN users u ON o.user_id = u.id
-      WHERE oi.quantity_backorder > 0
+      WHERE oi.quantity_delivered < oi.quantity_ordered
         AND o.status NOT IN ('delivered', 'cancelled')
         AND p.deleted_at IS NULL
-      ORDER BY oi.quantity_backorder DESC, o.created_at ASC
+      ORDER BY p.supplier, oi.quantity_ordered - oi.quantity_delivered DESC, o.created_at ASC
     `);
+
+    // Get unique suppliers for filter dropdown
+    const suppliers = [
+      ...new Set(items.filter((i) => i.supplier).map((i) => i.supplier)),
+    ].sort();
 
     // Calculate totals
     const totals = {
       total_items: items.length,
-      total_backorder: items.reduce((sum, i) => sum + (i.quantity_backorder || 0), 0),
+      total_backorder: items.reduce(
+        (sum, i) => sum + (i.quantity_backorder || 0),
+        0,
+      ),
       unique_parts: new Set(items.map((i) => i.part_id)).size,
       unique_orders: new Set(items.map((i) => i.order_id)).size,
+      unique_suppliers: suppliers.length,
     };
 
     res.status(200).json({
       success: true,
       data: items,
+      suppliers,
       totals,
     });
   } catch (error) {
