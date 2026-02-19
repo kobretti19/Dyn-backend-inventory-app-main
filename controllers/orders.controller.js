@@ -426,6 +426,7 @@ exports.getPartsSummary = async (req, res) => {
         o.id AS order_id,
         o.order_number,
         o.status AS order_status,
+        o.status_history,
         o.created_at AS order_date,
         o.notes AS order_notes,
         u.full_name AS ordered_by
@@ -530,6 +531,7 @@ exports.getBackorderParts = async (req, res) => {
         o.order_number,
         o.status AS order_status,
         o.created_at AS order_date,
+        o.status_history,
         u.full_name AS ordered_by
       FROM order_items oi
       JOIN parts p ON oi.part_id = p.id
@@ -566,5 +568,152 @@ exports.getBackorderParts = async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+
+// POST add item to existing order
+exports.addItem = async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const orderId = req.params.id;
+    const { part_id, quantity, unit_price, notes } = req.body;
+
+    // Verify order exists and is not delivered/cancelled
+    const [orders] = await connection.query(
+      'SELECT * FROM orders WHERE id = ?',
+      [orderId]
+    );
+
+    if (orders.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ success: false, error: 'Order not found' });
+    }
+
+    const order = orders[0];
+
+    if (['delivered', 'cancelled'].includes(order.status)) {
+      await connection.rollback();
+      return res.status(400).json({
+        success: false,
+        error: 'Cannot add items to delivered or cancelled orders',
+      });
+    }
+
+    // Get part price if not provided
+    let itemPrice = unit_price;
+    if (!itemPrice) {
+      const [parts] = await connection.query(
+        'SELECT purchase_price FROM parts WHERE id = ?',
+        [part_id]
+      );
+      itemPrice = parts[0]?.purchase_price || 0;
+    }
+
+    // Add item
+    await connection.query(
+      `INSERT INTO order_items (order_id, part_id, quantity_ordered, unit_price, notes, status)
+       VALUES (?, ?, ?, ?, ?, 'pending')`,
+      [orderId, part_id, quantity, itemPrice, notes]
+    );
+
+    // Update order total
+    const [totals] = await connection.query(
+      'SELECT SUM(quantity_ordered * unit_price) AS total FROM order_items WHERE order_id = ?',
+      [orderId]
+    );
+
+    await connection.query(
+      'UPDATE orders SET total_amount = ? WHERE id = ?',
+      [totals[0].total || 0, orderId]
+    );
+
+    await connection.commit();
+
+    res.status(201).json({
+      success: true,
+      message: 'Item added to order',
+    });
+  } catch (error) {
+    await connection.rollback();
+    res.status(500).json({ success: false, error: error.message });
+  } finally {
+    connection.release();
+  }
+};
+
+// DELETE remove item from order
+exports.deleteItem = async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const itemId = req.params.id;
+
+    // Get item and order info
+    const [items] = await connection.query(
+      `SELECT oi.*, o.status AS order_status 
+       FROM order_items oi 
+       JOIN orders o ON oi.order_id = o.id 
+       WHERE oi.id = ?`,
+      [itemId]
+    );
+
+    if (items.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ success: false, error: 'Item not found' });
+    }
+
+    const item = items[0];
+
+    // Don't allow deleting if already delivered
+    if (item.quantity_delivered > 0) {
+      await connection.rollback();
+      return res.status(400).json({
+        success: false,
+        error: 'Cannot delete item that has been partially or fully delivered',
+      });
+    }
+
+    // Don't allow deleting from delivered/cancelled orders
+    if (['delivered', 'cancelled'].includes(item.order_status)) {
+      await connection.rollback();
+      return res.status(400).json({
+        success: false,
+        error: 'Cannot delete items from delivered or cancelled orders',
+      });
+    }
+
+    const orderId = item.order_id;
+
+    // Delete item
+    await connection.query('DELETE FROM order_items WHERE id = ?', [itemId]);
+
+    // Update order total
+    const [totals] = await connection.query(
+      'SELECT SUM(quantity_ordered * unit_price) AS total FROM order_items WHERE order_id = ?',
+      [orderId]
+    );
+
+    await connection.query(
+      'UPDATE orders SET total_amount = ? WHERE id = ?',
+      [totals[0].total || 0, orderId]
+    );
+
+    await connection.commit();
+
+    res.status(200).json({
+      success: true,
+      message: 'Item removed from order',
+    });
+  } catch (error) {
+    await connection.rollback();
+    res.status(500).json({ success: false, error: error.message });
+  } finally {
+    connection.release();
   }
 };

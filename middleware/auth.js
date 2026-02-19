@@ -1,46 +1,36 @@
-const jwt = require('jsonwebtoken');
+const jwt = require("jsonwebtoken");
+const db = require("../db");
 
-// Verify JWT token
-exports.verifyToken = (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1];
-
-  if (!token) {
-    return res.status(401).json({
-      success: false,
-      error: 'Access denied. No token provided.',
-    });
-  }
-
+// Main auth middleware
+const auth = async (req, res, next) => {
   try {
+    const token = req.header("Authorization")?.replace("Bearer ", "");
+
+    if (!token) {
+      return res
+        .status(401)
+        .json({ success: false, error: "No token provided" });
+    }
+
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
+
+    const [users] = await db.query(
+      "SELECT id, email, full_name, userType FROM users WHERE id = ?",
+      [decoded.id],
+    );
+
+    if (users.length === 0) {
+      return res.status(401).json({ success: false, error: "User not found" });
+    }
+
+    req.user = users[0];
     next();
   } catch (error) {
-    return res.status(401).json({
-      success: false,
-      error: 'Invalid or expired token.',
-    });
+    res.status(401).json({ success: false, error: "Invalid token" });
   }
 };
 
-// Check if user is admin
-exports.isAdmin = (req, res, next) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({
-      success: false,
-      error: 'Access denied. Admin privileges required.',
-    });
-  }
-  next();
-};
-
-// Check if user is admin or manager
-exports.isAdminOrManager = (req, res, next) => {
-  if (req.user.role !== 'admin' && req.user.role !== 'manager') {
-    return res.status(403).json({
-      success: false,
-      error: 'Access denied. Manager privileges required.',
-    });
-  }
-  next();
-};
+// Export both ways for compatibility
+module.exports = auth;
+module.exports.verifyToken = auth;
+module.exports.auth = auth;
